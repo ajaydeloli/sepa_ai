@@ -9,7 +9,37 @@ description = "Minervini SEPA Stock Analysis System for NSE / Indian Equities"
 readme = "PROJECT_DESIGN.md"
 requires-python = ">=3.11"
 license = { text = "Proprietary" }
-dependencies = []   # managed via requirements.txt
+dependencies = [
+    # --- data acquisition -------------------------------------------------------
+    "yfinance>=0.2.40",
+    "nsepython>=2.10",
+    "requests>=2.31.0",
+    "beautifulsoup4>=4.12.0",
+    # --- data processing --------------------------------------------------------
+    "pandas>=2.2.0",
+    "numpy>=1.26.0",
+    "pyarrow>=15.0.0",
+    "pandas-market-calendars>=4.4.0",
+    "openpyxl>=3.1.0",
+    # --- config / validation ----------------------------------------------------
+    "pydantic>=2.6.0",
+    "pyyaml>=6.0.1",
+    "python-dotenv>=1.0.0",
+    # --- API --------------------------------------------------------------------
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.29.0",
+    "slowapi>=0.1.9",
+    # --- dashboard --------------------------------------------------------------
+    "streamlit>=1.33.0",
+    # --- charting ---------------------------------------------------------------
+    "mplfinance>=0.12.10b0",
+    # --- scheduling -------------------------------------------------------------
+    "apscheduler>=3.10.0",
+    # --- alerts -----------------------------------------------------------------
+    "python-telegram-bot>=21.0",
+    # --- templating -------------------------------------------------------------
+    "jinja2>=3.1.3",
+]
 
 [project.optional-dependencies]
 dev = [

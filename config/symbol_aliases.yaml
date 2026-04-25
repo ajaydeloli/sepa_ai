@@ -1,42 +1,5 @@
-# Symbol alias mapping for news sentiment matching.
-# Each key is an NSE symbol; values are substrings to look for in article text.
-# Add lowercase aliases only — matching is case-insensitive.
-
-RELIANCE:
-  - "reliance industries"
-  - "ril "
-  - "reliance jio"
-  - "reliance retail"
-
-TCS:
-  - "tcs"
-  - "tata consultancy"
-
-HDFCBANK:
-  - "hdfc bank"
-  - "hdfcbank"
-
-ICICIBANK:
-  - "icici bank"
-
-INFY:
-  - "infosys"
-  - "infy"
-
-DIXON:
-  - "dixon technologies"
-  - "dixon tech"
-
-TATAELXSI:
-  - "tata elxsi"
-
-POLYCAB:
-  - "polycab"
-
-ASTRAL:
-  - "astral poly"
-  - "astral ltd"
-
-BAJFINANCE:
-  - "bajaj finance"
-  - "bajaj fin"
+RELIANCE: ["reliance industries", "ril ", "reliance jio", "reliance retail"]
+TCS: ["tcs", "tata consultancy"]
+HDFCBANK: ["hdfc bank", "hdfcbank"]
+INFY: ["infosys", "infy"]
+DIXON: ["dixon technologies", "dixon tech"]
