@@ -1,7 +1,7 @@
 # PROJECT_DESIGN.md
 # Minervini SEPA Stock Analysis System
 
-> **Version:** 1.4.0  
+> **Version:** 1.0.0  
 > **Last Updated:** 2026-04-25  
 > **Methodology:** Mark Minervini's Specific Entry Point Analysis (SEPA)  
 > **Target Market:** NSE / Indian Equities (adaptable to any market)

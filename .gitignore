@@ -1,0 +1,84 @@
+# ── Python ─────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+.Python
+
+# ── Virtual environments ───────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+
+# ── Distribution / packaging ───────────────────────────────────────────────────
+build/
+dist/
+*.egg-info/
+*.egg
+.eggs/
+
+# ── Environment & secrets ──────────────────────────────────────────────────────
+.env
+*.env.local
+*.env.*.local
+
+# ── Data files (never commit raw/processed market data) ───────────────────────
+data/raw/
+data/processed/
+data/features/
+data/fundamentals/
+data/news/
+data/metadata/
+data/paper_trading/
+data/*.db
+data/*.sqlite
+
+# ── Reports & generated outputs ───────────────────────────────────────────────
+reports/output/
+reports/*.html
+reports/*.csv
+*.png
+*.jpg
+*.jpeg
+
+# ── Logs ──────────────────────────────────────────────────────────────────────
+*.log
+logs/
+
+# ── Testing & coverage ────────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+*.coveragerc
+
+# ── Ruff / linting ────────────────────────────────────────────────────────────
+.ruff_cache/
+
+# ── Mypy ──────────────────────────────────────────────────────────────────────
+.mypy_cache/
+
+# ── Jupyter notebooks (outputs only) ──────────────────────────────────────────
+notebooks/.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# ── IDEs ──────────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# ── Parquet & Arrow ───────────────────────────────────────────────────────────
+*.parquet
+*.arrow
+
+# ── Streamlit ─────────────────────────────────────────────────────────────────
+.streamlit/secrets.toml
+
+# ── Next.js (frontend) ────────────────────────────────────────────────────────
+frontend/.next/
+frontend/node_modules/
+frontend/out/
