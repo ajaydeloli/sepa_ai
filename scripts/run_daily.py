@@ -4,7 +4,9 @@ scripts/run_daily.py
 --------------------
 Daily run CLI for the SEPA AI pipeline.
 
-Phase 1 skeleton — ingestion and symbol-resolution wiring only.
+Phase 1 — ingestion, symbol-resolution, and OHLCV persistence.
+Fetched rows are validated and appended to data/processed/{symbol}.parquet
+via append_row() so the processed store stays current after every run.
 Features, rules, and scoring are not yet implemented.
 
 Usage examples
@@ -29,10 +31,12 @@ _ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ROOT))
 
 from ingestion.universe_loader import load_watchlist_file, resolve_symbols  # noqa: E402
+from ingestion.validator import validate  # noqa: E402
 from ingestion.yfinance_source import YFinanceSource  # noqa: E402
 from pipeline.context import RunContext  # noqa: E402
+from storage.parquet_store import append_row  # noqa: E402
 from storage.sqlite_store import SQLiteStore  # noqa: E402
-from utils.exceptions import DataSourceError  # noqa: E402
+from utils.exceptions import DataSourceError, DataValidationError, FeatureStoreOutOfSyncError, InsufficientDataError  # noqa: E402
 from utils.logger import get_logger  # noqa: E402
 
 log = get_logger("run_daily")
@@ -181,49 +185,89 @@ def main() -> None:
         return
 
 
-    # ── Live run: fetch + light-validate each symbol ───────────────────────
+    # ── Live run: fetch → validate → append to processed store ──────────────
     log.info(
-        "Phase 1 skeleton: ingestion and rules not yet implemented. "
-        "Resolved %d symbols for run date %s.",
+        "Resolved %d symbols for run date %s. Fetching and persisting OHLCV …",
         len(run_symbols.all),
         run_date,
     )
+
+    # ── Processed-parquet directory (mirrors bootstrap.py) ─────────────────
+    raw_processed = config.get("data", {}).get("processed_dir", "data/processed")
+    processed_dir = Path(raw_processed)
+    if not processed_dir.is_absolute():
+        processed_dir = _ROOT / processed_dir
+    processed_dir.mkdir(parents=True, exist_ok=True)
 
     source = YFinanceSource()
     end_date = run_date
     start_date = run_date - timedelta(days=5)
 
-    success: int = 0
+    success: int = 0        # fetched + validated + appended
+    skipped: int = 0        # today's data already in parquet (idempotent re-run)
     failed: int = 0
     failed_symbols: list[str] = []
 
     for symbol in run_symbols.all:
+        parquet_path = processed_dir / f"{symbol}.parquet"
+
+        # ── Fetch ──────────────────────────────────────────────────────────
         try:
             df = source.fetch(symbol, start=start_date, end=end_date)
-            if df.empty:
-                log.warning("fetch(%s): empty DataFrame.", symbol)
-                failed += 1
-                failed_symbols.append(symbol)
-                continue
-            log.info("fetch(%s): OK — %d row(s).", symbol, len(df))
-            success += 1
         except DataSourceError as exc:
             log.warning("fetch(%s): DataSourceError — %s", symbol, exc)
             failed += 1
             failed_symbols.append(symbol)
+            continue
         except Exception as exc:  # noqa: BLE001
             log.warning("fetch(%s): unexpected error — %s", symbol, exc)
             failed += 1
             failed_symbols.append(symbol)
+            continue
+
+        if df.empty:
+            log.warning("fetch(%s): empty DataFrame — skipping.", symbol)
+            failed += 1
+            failed_symbols.append(symbol)
+            continue
+
+        # ── Validate ───────────────────────────────────────────────────────
+        try:
+            df = validate(df, symbol)
+        except (DataValidationError, InsufficientDataError) as exc:
+            log.warning("validate(%s) failed: %s", symbol, exc)
+            failed += 1
+            failed_symbols.append(symbol)
+            continue
+
+        # ── Append to processed parquet ────────────────────────────────────
+        try:
+            append_row(parquet_path, df)
+            log.info(
+                "append_row(%s): %d row(s) persisted → %s",
+                symbol, len(df), parquet_path.name,
+            )
+            success += 1
+        except FeatureStoreOutOfSyncError:
+            # Today's data already present — idempotent re-run, not an error
+            log.debug("append_row(%s): today's data already exists — skipping.", symbol)
+            skipped += 1
+        except Exception as exc:  # noqa: BLE001
+            log.error("append_row(%s) failed: %s", symbol, exc)
+            failed += 1
+            failed_symbols.append(symbol)
 
     log.info(
-        "Fetch summary: %d/%d succeeded, %d failed.",
-        success,
-        len(run_symbols.all),
-        failed,
+        "Daily run complete: %d appended, %d already up-to-date, %d failed (of %d total).",
+        success, skipped, failed, len(run_symbols.all),
+    )
+    print(
+        f"\nDaily run complete: {success} appended, {skipped} already up-to-date, "
+        f"{failed} failed (of {len(run_symbols.all)} total)."
     )
     if failed_symbols:
         log.warning("Failed symbols: %s", ", ".join(failed_symbols))
+        print(f"Failed symbols ({len(failed_symbols)}): {', '.join(failed_symbols)}")
 
 
 if __name__ == "__main__":

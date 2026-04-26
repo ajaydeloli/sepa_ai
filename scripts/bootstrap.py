@@ -17,6 +17,9 @@ Usage
     python scripts/bootstrap.py --universe nifty500
     python scripts/bootstrap.py --universe nse_all --start-date 2018-01-01
     python scripts/bootstrap.py --symbols "RELIANCE,TCS,INFY"
+    python scripts/bootstrap.py --watchlist-file path/to/watchlist.xlsx
+    python scripts/bootstrap.py --watchlist-file watchlist.csv --force
+    python scripts/bootstrap.py --symbols "RELIANCE" --watchlist-file extra.txt
     python scripts/bootstrap.py --universe nifty500 --force
 """
 
@@ -33,6 +36,7 @@ _ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ROOT))
 
 from ingestion.nsepython_universe import get_universe  # noqa: E402
+from ingestion.universe_loader import load_watchlist_file  # noqa: E402
 from ingestion.yfinance_source import YFinanceSource  # noqa: E402
 from ingestion.validator import validate  # noqa: E402
 from storage.parquet_store import write_parquet  # noqa: E402
@@ -71,7 +75,13 @@ def _parse_args() -> argparse.Namespace:
         "--symbols",
         default=None,
         metavar="SYMBOLS",
-        help='Comma-separated symbols — overrides --universe',
+        help='Comma-separated symbols — merged with --watchlist-file; both override --universe',
+    )
+    parser.add_argument(
+        "--watchlist-file",
+        default=None,
+        metavar="FILE",
+        help="Path to watchlist file (.csv / .json / .xlsx / .txt) — merged with --symbols; both override --universe",
     )
     parser.add_argument(
         "--force",
@@ -93,9 +103,36 @@ def main() -> None:
     processed_dir.mkdir(parents=True, exist_ok=True)
 
     # ── Symbol list ────────────────────────────────────────────────────────
+    cli_symbols: list[str] = []
     if args.symbols:
-        symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
-        log.info("Bootstrap: %d CLI symbol(s).", len(symbols))
+        cli_symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
+        log.info("Bootstrap: %d inline symbol(s) from --symbols.", len(cli_symbols))
+
+    file_symbols: list[str] = []
+    if args.watchlist_file:
+        watchlist_path = Path(args.watchlist_file)
+        if not watchlist_path.is_absolute():
+            watchlist_path = Path.cwd() / watchlist_path
+        try:
+            file_symbols = load_watchlist_file(watchlist_path)
+            log.info(
+                "Bootstrap: %d symbol(s) loaded from watchlist file '%s'.",
+                len(file_symbols),
+                watchlist_path.name,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.error("Failed to load --watchlist-file '%s': %s", args.watchlist_file, exc)
+            sys.exit(1)
+
+    if cli_symbols or file_symbols:
+        # Merge --symbols and --watchlist-file, preserving order, deduplicating
+        seen: set[str] = set()
+        symbols: list[str] = []
+        for sym in cli_symbols + file_symbols:
+            if sym not in seen:
+                seen.add(sym)
+                symbols.append(sym)
+        log.info("Bootstrap: %d unique symbol(s) after merging CLI + file inputs.", len(symbols))
     else:
         log.info("Loading universe: %s …", args.universe)
         symbols = get_universe(args.universe)
