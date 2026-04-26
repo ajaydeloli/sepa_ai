@@ -1,4 +1,4 @@
-.PHONY: install test lint format daily bootstrap backtest rebuild api dashboard paper-reset help
+.PHONY: install test lint format daily bootstrap watchlist-only backtest rebuild api dashboard paper-reset help
 
 PYTHON := .venv/bin/python
 PIP    := .venv/bin/pip
@@ -18,27 +18,25 @@ help:
 	@echo "  paper-reset   Reset paper trading portfolio"
 
 install:
-	python3.11 -m venv .venv
-	$(PIP) install --upgrade pip
-	$(PIP) install -r requirements-dev.txt
-	$(PIP) install -e .
-	@echo "✅  Environment ready. Activate with: source .venv/bin/activate"
+	pip install -e ".[dev]"
 
 test:
-	$(PYTHON) -m pytest tests/ -v --cov=. --cov-report=term-missing --cov-report=html
+	pytest tests/ -v --cov=. --cov-report=term-missing
 
 lint:
-	$(PYTHON) -m ruff check .
+	ruff check .
 
 format:
-	$(PYTHON) -m ruff format .
-	$(PYTHON) -m black .
+	ruff format .
 
 daily:
-	$(PYTHON) scripts/run_daily.py --date today
+	python scripts/run_daily.py --date today
 
 bootstrap:
-	$(PYTHON) scripts/bootstrap.py --universe nifty500
+	python scripts/bootstrap.py --universe nifty500
+
+watchlist-only:
+	python scripts/run_daily.py --watchlist-only
 
 backtest:
 	$(PYTHON) scripts/backtest_runner.py --start $(START) --end $(END) --universe nifty500
