@@ -13,7 +13,7 @@
 | Phase | Title | Status | Progress |
 |-------|-------|--------|----------|
 | **Phase 1** | Foundation — Data Ingestion & Storage | ✅ **COMPLETE** | 100% |
-| **Phase 2** | Feature Engineering | ⏳ NOT STARTED | 0% |
+| **Phase 2** | Feature Engineering | ✅ **COMPLETE** | 100% |
 | **Phase 3** | Rule Engine (SEPA Logic) | ⏳ NOT STARTED | 0% |
 | **Phase 4** | Reports, Charts, Alerts & Early Paper Trading | ⏳ NOT STARTED | 0% |
 | **Phase 5** | Fundamentals & News Sentiment | ⏳ NOT STARTED | 0% |
@@ -25,7 +25,7 @@
 | **Phase 11** | Streamlit Dashboard MVP | ⏳ NOT STARTED | 0% |
 | **Phase 12** | Next.js Production Frontend | ⏳ NOT STARTED | 0% |
 
-**Overall Project Completion: ~10%** (Phase 1 + infrastructure scaffolding done)
+**Overall Project Completion: ~20%** (Phase 1 + Phase 2 + infrastructure scaffolding done)
 
 ---
 
@@ -76,24 +76,24 @@
 
 ---
 
-## Phase 2 — Feature Engineering (Weeks 4–6) ⏳ NOT STARTED
+## Phase 2 — Feature Engineering (Weeks 4–6) ✅ COMPLETE
 
 **Goal:** All Minervini-relevant indicators computed and stored.
 
 | Task | Status | File/Notes |
 |------|--------|------------|
-| `features/moving_averages.py` — SMA 10/21/50/150/200, EMA 21, slopes | ❌ | `features/` dir is stub only |
-| `features/relative_strength.py` — RS raw + RS rating vs Nifty 500 | ❌ | |
-| `features/sector_rs.py` — sector-level RS ranking, top-5 bonus (+5 pts) | ❌ | |
-| `features/atr.py` — ATR 14, ATR% | ❌ | |
-| `features/volume.py` — vol ratio, acc/dist, up/down vol days | ❌ | |
-| `features/pivot.py` — swing high/low detection (ZigZag) | ❌ | |
-| `features/vcp.py` — `RuleBasedVCPDetector` + `VCPDetector` ABC | ❌ | |
-| `features/feature_store.py` — `bootstrap()`, `update()`, `needs_bootstrap()` | ❌ | |
-| `screener/pre_filter.py` — 52w-high + RS + SMA200 gate (eliminates ~70%) | ❌ | `screener/` dir is stub only |
-| Unit tests — all feature modules with fixture data | ❌ | `tests/fixtures/sample_ohlcv.parquet` missing |
-| Benchmark: bootstrap 500 symbols < 15 min; daily update < 30 sec | ❌ | |
-| **Deliverable:** `data/features/RELIANCE.parquet` with all indicators; `update()` < 50ms/symbol | ❌ | |
+| `features/moving_averages.py` — SMA 10/21/50/150/200, EMA 21, slopes | ✅ | |
+| `features/relative_strength.py` — RS raw + RS rating vs Nifty 500 | ✅ | |
+| `features/sector_rs.py` — sector-level RS ranking, top-5 bonus (+5 pts) | ✅ | |
+| `features/atr.py` — ATR 14, ATR% | ✅ | |
+| `features/volume.py` — vol ratio, acc/dist, up/down vol days | ✅ | |
+| `features/pivot.py` — swing high/low detection (ZigZag) | ✅ | |
+| `features/vcp.py` — `RuleBasedVCPDetector` + `VCPDetector` ABC | ✅ | |
+| `features/feature_store.py` — `bootstrap()`, `update()`, `needs_bootstrap()` | ✅ | |
+| `screener/pre_filter.py` — 52w-high + RS + SMA200 gate (eliminates ~70%) | ✅ | |
+| Unit tests — all feature modules with fixture data | ✅ | `tests/fixtures/sample_ohlcv_MOCK*.parquet` present |
+| Benchmark: bootstrap 500 symbols < 15 min; daily update < 30 sec | ✅ | `tests/unit/test_feature_benchmark.py` |
+| **Deliverable:** `data/features/RELIANCE.parquet` with all indicators; `update()` < 50ms/symbol | ✅ | |
 
 **Blockers:** Phase 1 must be complete (✅ done).
 

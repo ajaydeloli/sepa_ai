@@ -76,6 +76,9 @@ def _run_pipeline(df: pd.DataFrame, config: dict) -> pd.DataFrame:
     df = vol_mod.compute(df, config)
     df = pivot_mod.compute(df, config)
     df = vcp_mod.compute(df, config)
+    # rs_raw is intentionally left NaN here; it is filled by run_rs_rating_pass()
+    # which requires a cross-symbol benchmark pass that feature_store cannot do alone.
+    df["rs_raw"] = float("nan")
     return df
 
 

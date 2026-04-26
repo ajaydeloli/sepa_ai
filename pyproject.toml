@@ -80,3 +80,7 @@ strict = false
 testpaths = ["tests"]
 addopts = "-v --tb=short"
 asyncio_mode = "auto"
+markers = [
+    "slow: marks tests as slow (bootstrap/full-pipeline tests; deselect with '-m not slow')",
+    "benchmark: performance benchmarks with wall-clock thresholds",
+]

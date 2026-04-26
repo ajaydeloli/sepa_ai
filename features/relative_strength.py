@@ -192,3 +192,166 @@ def compute_rs_rating(
         max(result.values()),
     )
     return result
+
+
+# ---------------------------------------------------------------------------
+# Cross-symbol orchestration helpers  (called from pipeline / screener)
+# ---------------------------------------------------------------------------
+
+
+def run_rs_rating_pass(
+    universe: list[str],
+    run_date: "date",
+    config: dict,
+    benchmark_df: pd.DataFrame,
+) -> dict[str, int]:
+    """Compute RS ratings for every symbol in *universe* in a single cross-symbol pass.
+
+    This function performs all I/O and orchestrates the two-stage RS calculation:
+    Stage 1 (per symbol): read processed data → call compute_rs_raw() → extract last rs_raw.
+    Stage 2 (cross universe): call compute_rs_rating() on the collected rs_raw values.
+
+    Parameters
+    ----------
+    universe:
+        List of ticker symbols to process (e.g. ``["RELIANCE", "TCS", "INFY"]``).
+    run_date:
+        The trading date being processed.  Used only for log messages.
+    config:
+        Screening configuration dict.  Relevant keys::
+
+            config["data"]["processed_dir"]  — directory with per-symbol Parquet files
+            config["rs"]["period"]           — lookback period (default 63)
+    benchmark_df:
+        Prepared benchmark OHLCV DataFrame (e.g. Nifty 500) aligned to the
+        symbol data.  Same schema as symbol DataFrames — DatetimeIndex + ``close``.
+
+    Returns
+    -------
+    dict[str, int]
+        Mapping of ``symbol → rs_rating`` (integer 0–99) for every symbol in
+        *universe*.  Symbols with insufficient data receive a rating of ``0``.
+    """
+    from pathlib import Path
+    from storage.parquet_store import read_last_n_rows
+
+    processed_dir = Path(config["data"]["processed_dir"])
+    period: int = config.get("rs", {}).get("period", _DEFAULT_RS_PERIOD)
+    rows_needed: int = period + _REQUIRED_ROWS_BUFFER + 5  # 70-row read window
+
+    all_rs_raw: dict[str, float] = {}
+
+    for symbol in universe:
+        path = processed_dir / f"{symbol}.parquet"
+        try:
+            symbol_df = read_last_n_rows(path, rows_needed)
+            if len(symbol_df) < _MIN_ROWS:
+                log.warning(
+                    "run_rs_rating_pass %s %s: only %d rows (need %d) — skipped",
+                    symbol, run_date, len(symbol_df), _MIN_ROWS,
+                )
+                all_rs_raw[symbol] = float("nan")
+                continue
+
+            result_df = compute_rs_raw(symbol_df, benchmark_df, config)
+            rs_val = float(result_df["rs_raw"].iloc[-1])
+            all_rs_raw[symbol] = rs_val
+
+        except InsufficientDataError as exc:
+            log.warning("run_rs_rating_pass %s %s: insufficient data (%s)", symbol, run_date, exc)
+            all_rs_raw[symbol] = float("nan")
+        except Exception as exc:  # noqa: BLE001
+            log.warning("run_rs_rating_pass %s %s: error (%s)", symbol, run_date, exc)
+            all_rs_raw[symbol] = float("nan")
+
+    # Filter out NaN symbols for rating computation but still assign 0 to them
+    valid_rs = {s: v for s, v in all_rs_raw.items() if np.isfinite(v)}
+    ratings = compute_rs_rating(valid_rs) if valid_rs else {}
+
+    # Assign 0 to symbols that had no valid data
+    result: dict[str, int] = {}
+    for symbol in universe:
+        result[symbol] = int(ratings.get(symbol, 0))
+
+    log.info(
+        "run_rs_rating_pass %s: processed %d symbols, %d valid, %d zero-rated",
+        run_date,
+        len(universe),
+        len(valid_rs),
+        len(universe) - len(valid_rs),
+    )
+    return result
+
+
+def write_rs_ratings_to_features(
+    rs_ratings: dict[str, int],
+    config: dict,
+) -> None:
+    """Write RS ratings back into each symbol's feature Parquet file (last row only).
+
+    Called ONCE per daily run after :func:`run_rs_rating_pass` has computed
+    ratings for the full universe.  The function reads the existing feature
+    file, sets the last row's ``rs_rating`` column to the integer rating, and
+    writes the file back atomically.
+
+    Parameters
+    ----------
+    rs_ratings:
+        Mapping of ``symbol → rs_rating`` as returned by
+        :func:`run_rs_rating_pass`.
+    config:
+        Screening configuration dict.  Relevant key::
+
+            config["data"]["features_dir"]  — directory with feature Parquet files
+
+    Notes
+    -----
+    * Only symbols whose feature file already exists are processed.
+    * If a symbol's feature file is missing, a warning is logged and that
+      symbol is skipped — no file is created.
+    * The write is a full-overwrite of the feature file (atomic via
+      :func:`~storage.parquet_store.write_parquet`) so callers should not
+      hold open file handles across this call.
+    """
+    from pathlib import Path
+    from storage.parquet_store import read_parquet, write_parquet
+
+    features_dir = Path(config["data"]["features_dir"])
+
+    for symbol, rating in rs_ratings.items():
+        path = features_dir / f"{symbol}.parquet"
+
+        if not path.exists():
+            log.warning(
+                "write_rs_ratings_to_features %s: feature file not found — skipped",
+                symbol,
+            )
+            continue
+
+        try:
+            df = read_parquet(path)
+            if df.empty:
+                log.warning(
+                    "write_rs_ratings_to_features %s: feature file is empty — skipped",
+                    symbol,
+                )
+                continue
+
+            df["rs_rating"] = df.get("rs_rating", np.nan)
+            df.iloc[-1, df.columns.get_loc("rs_rating")] = int(rating)
+
+            write_parquet(path, df)
+            log.debug(
+                "write_rs_ratings_to_features %s: set rs_rating=%d on last row",
+                symbol, rating,
+            )
+
+        except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "write_rs_ratings_to_features %s: failed to update (%s)", symbol, exc
+            )
+
+    log.info(
+        "write_rs_ratings_to_features: updated rs_rating for %d symbols",
+        len(rs_ratings),
+    )
