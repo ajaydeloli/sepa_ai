@@ -3899,3 +3899,1224 @@ Write full test in `tests/integration/test_api_e2e.py`:
 ```
 
 
+
+
+---
+---
+
+## PHASE 11 — Streamlit Dashboard MVP (Weeks 30–31)
+**Goal:** Visual dashboard for daily monitoring, accessible without SSH.
+
+### Dependency order within Phase 11
+```
+Step 1: dashboard/components/charts.py + tables.py + metrics.py
+Step 2: dashboard/pages/01_Watchlist.py
+Step 3: dashboard/pages/02_Screener.py + 03_Stock.py
+Step 4: dashboard/pages/04_Portfolio.py + 05_Backtest.py
+Step 5: dashboard/app.py (entry point + systemd service)
+```
+
+---
+
+### PHASE 11 — STEP 1 of 5: `dashboard/components/`
+
+#### Context files to attach
+- `rules/scorer.py` (SEPAResult)
+- `features/vcp.py` (VCPMetrics)
+- `paper_trading/portfolio.py` (Portfolio, ClosedTrade)
+- `utils/logger.py`
+
+#### Prompt
+```
+You are building the Streamlit dashboard components for a Minervini SEPA system.
+Project root: /home/ubuntu/projects/sepa_ai/
+
+TASK: Implement THREE component files in `dashboard/components/`.
+
+--- FILE 1: dashboard/components/charts.py ---
+
+import mplfinance as mpf
+import matplotlib.pyplot as plt
+import streamlit as st
+
+def render_ohlcv_chart(
+    symbol: str,
+    ohlcv_df: pd.DataFrame,
+    result: dict,
+    vcp_metrics: dict | None = None,
+    n_days: int = 90,
+) -> None:
+    """
+    Renders a candlestick chart inline in Streamlit.
+
+    Chart elements:
+      - Candlestick OHLCV (last n_days)
+      - MA ribbons: SMA 50 (blue), SMA 150 (orange), SMA 200 (red)
+      - Volume panel (bottom 20%)
+      - Stage label annotation: top-right corner, colour-coded
+      - Setup quality badge: "★ A+" in top-left
+      - Entry price line (green dashed) if result["entry_price"]
+      - Stop loss line (red dashed) if result["stop_loss"]
+      - VCP contraction zones (yellow shaded) if vcp_metrics provided
+
+    Use mplfinance with returnfig=True then st.pyplot(fig).
+    Always call plt.close(fig) after st.pyplot().
+    ohlcv_df must have DatetimeIndex + [open, high, low, close, volume] columns.
+    MA columns: sma_50, sma_150, sma_200 (skip if missing).
+    """
+
+def render_equity_curve(equity_curve: list[dict]) -> None:
+    """
+    Renders paper trading equity curve using st.line_chart or matplotlib.
+    equity_curve: list of {"date": str, "total_value": float}
+    Shows initial_capital as a baseline horizontal line.
+    """
+
+--- FILE 2: dashboard/components/tables.py ---
+
+import streamlit as st
+import pandas as pd
+
+def render_results_table(
+    results: list[dict],
+    watchlist_symbols: list[str] = None,
+    show_columns: list[str] = None,
+) -> str | None:
+    """
+    Renders a styled screener results table in Streamlit.
+
+    Default columns: symbol, score, setup_quality, stage, conditions_met,
+                     vcp_qualified, breakout_triggered, entry_price, stop_loss,
+                     risk_pct, rs_rating
+
+    Styling:
+      - Quality badge colour: A+=gold bg, A=green bg, B=blue bg, C=grey, FAIL=red
+      - Watchlist symbols: bold + ★ prefix
+      - Breakout triggered: 🔴 label
+      - Sortable (use st.dataframe with column_config)
+
+    Returns the symbol the user clicked on (if selection enabled), or None.
+    """
+
+def render_trend_template_checklist(tt_details: dict) -> None:
+    """
+    Renders the 8 Trend Template conditions as a pass/fail checklist.
+    Uses st.success / st.error / st.info per condition.
+    Shows numeric values (e.g., "Close 145.2 > SMA200 132.1 ✅")
+    """
+
+def render_fundamental_scorecard(fund_details: dict | None) -> None:
+    """
+    Renders 7 fundamental conditions as a compact scorecard.
+    If fund_details is None: shows "Fundamentals not available" info box.
+    Columns: 2×4 grid layout using st.columns.
+    """
+
+--- FILE 3: dashboard/components/metrics.py ---
+
+import streamlit as st
+
+def render_score_card(score: int, quality: str, stage_label: str) -> None:
+    """
+    Renders a 3-column metric card at the top of the Stock deep-dive page:
+      col1: Score gauge (0–100, colour-coded: <40=red, 40-70=yellow, 70+=green)
+      col2: Quality badge (A+/A/B/C/FAIL with colour)
+      col3: Stage label
+    Use st.metric() + st.markdown for styling.
+    """
+
+def render_portfolio_summary_cards(summary: dict) -> None:
+    """
+    Renders key portfolio metrics as st.metric cards in a 4-column row:
+      Total Return %, Realised P&L (₹), Win Rate %, Open Positions count
+    """
+
+def render_run_status_bar(last_run: dict | None) -> None:
+    """
+    Small status bar at top of Watchlist page:
+      "Last run: 2024-01-15 15:35 IST | A+: 3 | A: 12 | Duration: 28s"
+    Uses st.info() or st.caption().
+    Shows "No run yet" if last_run is None.
+    """
+
+--- UNIT TESTS ---
+
+Create `tests/unit/test_dashboard_components.py`:
+1. render_results_table with 3 results — no Streamlit crash (mock st module)
+2. render_trend_template_checklist with all True → no exception
+3. render_fundamental_scorecard with None → shows N/A (no exception)
+4. render_score_card with score=91 → no exception
+5. render_equity_curve with empty list → shows empty chart (no exception)
+
+Note: mock streamlit calls using unittest.mock.patch("streamlit.metric") etc.
+Do NOT render actual Streamlit UI in tests.
+```
+
+
+---
+
+### PHASE 11 — STEP 2 of 5: `dashboard/pages/01_Watchlist.py`
+
+#### Context files to attach
+- `dashboard/components/tables.py`
+- `dashboard/components/metrics.py`
+- `storage/sqlite_store.py`
+- `screener/results.py`
+- `ingestion/universe_loader.py` (load_watchlist_file, validate_symbol)
+- `PROJECT_DESIGN.md` (section 13.2 — Watchlist page layout)
+
+#### Prompt
+```
+You are building the Watchlist page for the Streamlit dashboard.
+Project root: /home/ubuntu/projects/sepa_ai/
+
+TASK: Implement `dashboard/pages/01_Watchlist.py`.
+
+--- PAGE LAYOUT ---
+
+st.set_page_config(page_title="SEPA Watchlist", layout="wide")
+
+Section 1: Status bar
+  render_run_status_bar(last_run_from_db)
+
+Section 2: Custom Watchlist Manager (collapsible st.expander)
+  ── Manual entry ──────────────────────
+  text_input: "Enter symbols (comma-separated): RELIANCE, TCS, DIXON"
+  button: [➕ Add Symbols]
+    → validates each symbol, adds to SQLite watchlist table
+    → shows "Added: 2 | Already exists: 1 | Invalid: ['XYZ!']"
+
+  ── File upload ───────────────────────
+  file_uploader: accepts .csv, .json, .xlsx, .txt
+    → on upload: call load_watchlist_file(tmp_path), add valid symbols to SQLite
+    → shows upload result summary
+
+  ── Current watchlist table ───────────
+  Shows: symbol, last_score, last_quality, note, added_at, added_via
+  [🗑 Remove] button per row (using st.data_editor with delete column)
+  [🧹 Clear All] button (with st.warning confirmation dialog)
+
+  [🚀 Run Watchlist Now] button
+    → calls POST http://localhost:8000/api/v1/run {"scope":"watchlist"}
+    → shows spinner, then shows result summary on completion
+    → falls back to direct pipeline call if API not reachable
+
+Section 3: Today's Results
+  Tab 1: "★ Watchlist Results"
+    → render_results_table(watchlist_results, highlight_watchlist=True)
+  Tab 2: "Universe A+/A"
+    → render_results_table(universe_top_results)
+
+  Clicking a symbol row → navigate to Stock page (st.session_state["selected_symbol"])
+
+--- DATA LOADING ---
+
+@st.cache_data(ttl=60)
+def load_today_results() -> tuple[list[dict], list[dict]]:
+    """Returns (watchlist_results, universe_results) from SQLite."""
+
+--- SIDEBAR ---
+
+st.sidebar.selectbox("Date", recent_run_dates)
+st.sidebar.number_input("Min Score", 0, 100, 40)
+st.sidebar.selectbox("Min Quality", ["All", "B", "A", "A+"])
+[🔄 Refresh] button
+
+--- ANTI-PATTERNS ---
+- Never call the pipeline directly from a Streamlit page — use the API endpoint
+- Use st.session_state for symbol selection (not URL params)
+- Cache expensive DB reads with @st.cache_data(ttl=60)
+```
+
+
+---
+
+### PHASE 11 — STEP 3 of 5: `dashboard/pages/02_Screener.py` + `03_Stock.py`
+
+#### Context files to attach
+- `dashboard/components/tables.py`
+- `dashboard/components/charts.py`
+- `dashboard/components/metrics.py`
+- `screener/results.py`
+- `features/feature_store.py`
+
+#### Prompt
+```
+You are building the Screener and Stock deep-dive pages for the Streamlit dashboard.
+Project root: /home/ubuntu/projects/sepa_ai/
+
+TASK: Implement `dashboard/pages/02_Screener.py` and `dashboard/pages/03_Stock.py`.
+
+--- FILE 1: dashboard/pages/02_Screener.py ---
+
+PAGE LAYOUT:
+  Title: "📊 Full Universe Screener"
+
+  Filters row (st.columns):
+    - Quality: multiselect ["A+","A","B","C","FAIL"]
+    - Stage: selectbox [All, 1, 2, 3, 4]
+    - Min RS: slider 0–99
+    - Sector: selectbox from symbol_info
+    - Min Price: number_input
+    - Date: selectbox (recent run dates)
+
+  Summary row:
+    st.metric cards: "Total screened", "Stage 2", "Passed TT", "A+/A setups"
+
+  Results table:
+    render_results_table(filtered_results, watchlist_symbols)
+    Click → session_state["selected_symbol"] + switch to Stock page
+
+  Export row:
+    [📥 Download CSV] button (st.download_button)
+
+--- FILE 2: dashboard/pages/03_Stock.py ---
+
+PAGE LAYOUT:
+  Symbol selection: st.selectbox or read from session_state["selected_symbol"]
+  Date selection: selectbox from available run dates for that symbol
+
+  Row 1: render_score_card(score, quality, stage_label)
+
+  Row 2: Chart tab
+    render_ohlcv_chart(symbol, ohlcv_df, result, vcp_metrics)
+    Chart options: n_days slider (30/60/90/180), MA toggle checkboxes
+
+  Row 3: Analysis tabs
+    Tab "📋 Trend Template":
+      render_trend_template_checklist(result["trend_template_details"])
+    Tab "🌀 VCP":
+      VCP metrics: contraction_count, depths, vol_ratio, base_weeks, tightness
+      Small VCP anatomy diagram (pre-rendered image or ASCII art)
+    Tab "📈 Fundamentals":
+      render_fundamental_scorecard(result["fundamental_details"])
+      Show: EPS acceleration chart (last 4 quarters bar chart)
+    Tab "💬 LLM Brief":
+      Shows result["llm_brief"] in st.info() box
+      If None: "LLM brief not generated (disabled or quality below threshold)"
+    Tab "📅 History":
+      Line chart of score over last 30 days
+      Table of daily quality tags
+
+  Row 4: Sidebar shortcut
+    [⭐ Add to Watchlist] button
+    [🔴 Remove from Watchlist] button (if already in watchlist)
+
+--- DATA LOADING ---
+
+@st.cache_data(ttl=300)
+def load_stock_data(symbol: str, run_date: str) -> tuple[dict, pd.DataFrame, dict]:
+    """Returns (sepa_result, ohlcv_df, vcp_metrics)."""
+
+@st.cache_data(ttl=300)
+def load_stock_history(symbol: str, days: int = 30) -> list[dict]:
+    """Returns historical scores for the symbol."""
+```
+
+
+---
+
+### PHASE 11 — STEP 4 of 5: `dashboard/pages/04_Portfolio.py` + `05_Backtest.py`
+
+#### Context files to attach
+- `dashboard/components/charts.py`
+- `dashboard/components/metrics.py`
+- `paper_trading/simulator.py`
+- `paper_trading/report.py`
+- `backtest/metrics.py`
+- `backtest/report.py`
+
+#### Prompt
+```
+You are building the Portfolio and Backtest pages for the Streamlit dashboard.
+Project root: /home/ubuntu/projects/sepa_ai/
+
+TASK: Implement `dashboard/pages/04_Portfolio.py` and `dashboard/pages/05_Backtest.py`.
+
+--- FILE 1: dashboard/pages/04_Portfolio.py ---
+
+PAGE LAYOUT:
+  Title: "💼 Paper Trading Portfolio"
+
+  Summary cards row:
+    render_portfolio_summary_cards(summary)  # Total Return, P&L, Win Rate, Open Positions
+
+  Equity curve:
+    render_equity_curve(portfolio.equity_curve)
+
+  Tabs:
+    Tab "📂 Open Positions":
+      Table: symbol, entry_date, entry_price, current_price, unrealised_P&L%, 
+             days_held, stop_loss, trailing_stop, quality
+      Colour coding: green if unrealised_pnl_pct > 0, red if < 0
+      [🚪 Close Position] button per row (manual exit at current price via API)
+
+    Tab "📜 Closed Trades":
+      Table: all closed trades sorted by exit_date DESC
+      Colour coding: green rows for profitable, red for losses
+      R-multiple column: bold if > 2.0
+
+    Tab "📊 Statistics":
+      Quality breakdown table: win rate + avg R by quality tag
+      Monthly P&L bar chart
+      Hold time histogram (matplotlib, st.pyplot)
+
+  Warning banner if no trades yet:
+    st.warning("No paper trades yet. Run the daily screener to generate signals.")
+
+--- FILE 2: dashboard/pages/05_Backtest.py ---
+
+PAGE LAYOUT:
+  Title: "🔬 Backtest Results"
+
+  If no backtest results exist yet:
+    st.info("No backtest results yet.")
+    [▶ Run Backtest] form:
+      date_input: start_date (default 2019-01-01)
+      date_input: end_date (default today - 1 year)
+      selectbox: universe (nifty500 / nse_all)
+      slider: trailing_stop_pct (0.05–0.20)
+      checkbox: Compare with fixed stop
+      [Run] button → triggers backtest_runner.py via subprocess
+      Progress bar while running
+
+  If backtest results exist (load from reports/backtest_*.html or SQLite):
+    Summary metrics cards: CAGR, Sharpe, Max Drawdown, Win Rate, Profit Factor
+
+    Tabs:
+      Tab "📈 Equity Curve":
+        Load equity_curve from backtest result, render_equity_curve()
+
+      Tab "🌍 Regime Breakdown":
+        Table: Regime | Trades | Win Rate | Avg R-Multiple
+        Bar chart: win rate by regime
+
+      Tab "🏷 Quality Breakdown":
+        Table: A+/A/B/C trades with win rates
+
+      Tab "⚖️ Stop Comparison" (only if --compare was used):
+        Side-by-side: Trailing vs Fixed CAGR, Sharpe, Max Drawdown
+
+      Tab "📋 All Trades":
+        Full trades table with all BacktestTrade fields, sortable
+
+  [📥 Download CSV] button for full trades export
+```
+
+
+---
+
+### PHASE 11 — STEP 5 of 5: `dashboard/app.py` + systemd service
+
+#### Context files to attach
+- All dashboard pages and components built in steps 1–4
+- `deploy/minervini-dashboard.service` (from Phase 9)
+
+#### Prompt
+```
+You are completing the Streamlit dashboard entry point.
+Project root: /home/ubuntu/projects/sepa_ai/
+
+TASK: Implement `dashboard/app.py` and wire up navigation.
+
+--- dashboard/app.py ---
+
+import streamlit as st
+
+st.set_page_config(
+    page_title="SEPA AI — Minervini Screener",
+    page_icon="📈",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+# Global sidebar navigation header
+st.sidebar.title("📈 SEPA AI")
+st.sidebar.caption("Minervini SEPA Screener v1.0")
+st.sidebar.divider()
+
+# Show current API status in sidebar
+with st.sidebar:
+    try:
+        resp = requests.get("http://localhost:8000/api/v1/health", timeout=2)
+        if resp.ok:
+            st.sidebar.success("✅ API connected")
+        else:
+            st.sidebar.warning("⚠️ API error")
+    except Exception:
+        st.sidebar.error("❌ API offline")
+
+# Landing page content (shown when no sub-page is selected)
+st.title("📈 SEPA AI — Minervini Stock Screener")
+st.markdown("""
+Welcome to the SEPA AI dashboard. Navigate using the sidebar:
+- **Watchlist** — Daily A+/A candidates + custom watchlist manager
+- **Screener** — Full universe results with filters
+- **Stock** — Single stock deep-dive with chart + analysis
+- **Portfolio** — Paper trading portfolio
+- **Backtest** — Historical strategy performance
+""")
+
+# Quick stats on landing page
+db = get_db()
+meta = db.get_meta()
+col1, col2, col3, col4 = st.columns(4)
+with col1: st.metric("Last Run", meta.get("last_screen_date", "Never"))
+with col2: st.metric("A+ Setups", meta.get("a_plus_count", 0))
+with col3: st.metric("A Setups", meta.get("a_count", 0))
+with col4: st.metric("Universe", meta.get("universe_size", 0))
+
+--- SYSTEMD SERVICE VERIFICATION ---
+
+Update `deploy/minervini-dashboard.service`:
+  ExecStart: /home/ubuntu/projects/sepa_ai/.venv/bin/streamlit run
+             dashboard/app.py --server.port 8501 --server.headless true
+             --server.address 0.0.0.0
+
+Add health check to `deploy/install.sh`:
+  echo "Waiting for dashboard to start..."
+  sleep 5
+  curl -s http://localhost:8501/healthz | grep -q "ok" && echo "Dashboard OK" || echo "Dashboard may not be ready yet"
+
+--- MAKEFILE UPDATE ---
+
+Add to Makefile:
+  dashboard-dev:
+      streamlit run dashboard/app.py --server.port 8501
+
+  test-dashboard:
+      pytest tests/unit/test_dashboard_components.py -v
+
+--- FINAL INTEGRATION CHECK ---
+
+Run this sequence to verify everything works together:
+  1. make api        → FastAPI starts on port 8000
+  2. make daily      → daily run completes, results in SQLite
+  3. make dashboard  → Streamlit starts on port 8501
+  4. Open http://localhost:8501 → Watchlist page shows today's results
+  5. Upload a CSV → symbols added to watchlist
+  6. Click [Run Watchlist Now] → pipeline runs, results refresh
+  7. Click a symbol → Stock deep-dive shows chart + analysis
+```
+
+
+
+
+---
+---
+
+## PHASE 12 — Next.js Production Frontend (Weeks 32–36)
+**Goal:** Shareable, mobile-friendly web app backed by the FastAPI layer.
+
+### Dependency order within Phase 12
+```
+Step 1: Project scaffold + lib/types.ts + lib/api.ts
+Step 2: Screener table page + shared components (StockTable, ScoreGauge)
+Step 3: Stock deep-dive page (CandlestickChart, TrendTemplateCard, VCPCard)
+Step 4: Watchlist page + Portfolio page
+Step 5: Deploy to Vercel + final polish
+```
+
+---
+
+### PHASE 12 — STEP 1 of 5: Project Scaffold + API Client + Types
+
+#### Context files to attach
+- `api/schemas/stock.py` (Pydantic models — source of TypeScript types)
+- `api/schemas/portfolio.py`
+- `api/schemas/common.py`
+- `PROJECT_DESIGN.md` (section 13.3 — Next.js technology choices)
+
+#### Prompt
+```
+You are scaffolding the Next.js frontend for a Minervini SEPA stock screener.
+Project root: /home/ubuntu/projects/sepa_ai/
+
+TASK: Create `frontend/` Next.js project scaffold, TypeScript types, and API client.
+
+--- SETUP ---
+
+Create the following directory structure (files will be filled in per step):
+
+frontend/
+├── app/
+│   ├── layout.tsx           ← root layout (Tailwind, global styles)
+│   ├── page.tsx             ← dashboard home
+│   ├── screener/
+│   │   ├── page.tsx
+│   │   └── [symbol]/
+│   │       └── page.tsx
+│   ├── watchlist/
+│   │   └── page.tsx
+│   └── portfolio/
+│       └── page.tsx
+├── components/
+│   ├── StockTable.tsx
+│   ├── CandlestickChart.tsx
+│   ├── TrendTemplateCard.tsx
+│   ├── VCPCard.tsx
+│   ├── ScoreGauge.tsx
+│   ├── PortfolioSummary.tsx
+│   ├── QualityBadge.tsx      ← colour-coded A+/A/B/C/FAIL badge
+│   └── NavBar.tsx
+├── lib/
+│   ├── api.ts
+│   └── types.ts
+├── public/
+├── next.config.ts
+├── tailwind.config.ts
+└── package.json
+
+--- FILE 1: frontend/lib/types.ts ---
+
+Export TypeScript interfaces matching the Pydantic schemas exactly:
+
+export interface TrendTemplate {
+  passes: boolean;
+  conditions_met: number;
+  condition_1: boolean; condition_2: boolean; condition_3: boolean;
+  condition_4: boolean; condition_5: boolean; condition_6: boolean;
+  condition_7: boolean; condition_8: boolean;
+}
+
+export interface VCPDetails {
+  qualified: boolean;
+  contraction_count: number | null;
+  max_depth_pct: number | null;
+  final_depth_pct: number | null;
+  vol_contraction_ratio: number | null;
+  base_length_weeks: number | null;
+  tightness_score: number | null;
+}
+
+export interface StockResult {
+  symbol: string;
+  run_date: string;
+  score: number;
+  setup_quality: "A+" | "A" | "B" | "C" | "FAIL";
+  stage: number;
+  stage_label: string;
+  stage_confidence: number;
+  trend_template_pass: boolean;
+  conditions_met: number;
+  vcp_qualified: boolean;
+  breakout_triggered: boolean;
+  entry_price: number | null;
+  stop_loss: number | null;
+  risk_pct: number | null;
+  target_price: number | null;
+  reward_risk_ratio: number | null;
+  rs_rating: number;
+  news_score: number | null;
+  fundamental_pass: boolean;
+  is_watchlist: boolean;
+  trend_template_details: TrendTemplate | null;
+  vcp_details: VCPDetails | null;
+  llm_brief: string | null;
+}
+
+export interface APIResponse<T> {
+  success: boolean;
+  data: T;
+  meta: Record<string, unknown> | null;
+  error: string | null;
+}
+
+export interface Position {
+  symbol: string; entry_date: string; entry_price: number;
+  quantity: number; stop_loss: number; trailing_stop: number;
+  days_held: number; unrealised_pnl: number; unrealised_pnl_pct: number;
+  setup_quality: string;
+}
+
+export interface Trade {
+  symbol: string; entry_date: string; exit_date: string;
+  entry_price: number; exit_price: number; pnl: number;
+  pnl_pct: number; r_multiple: number; exit_reason: string;
+  setup_quality: string;
+}
+
+export interface PortfolioSummary {
+  cash: number; open_value: number; total_value: number;
+  initial_capital: number; total_return_pct: number;
+  realised_pnl: number; unrealised_pnl: number;
+  win_rate: number; total_trades: number;
+  open_count: number; closed_count: number;
+  profit_factor: number; avg_r_multiple: number;
+  positions: Position[];
+}
+
+--- FILE 2: frontend/lib/api.ts ---
+
+const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+const API_KEY = process.env.NEXT_PUBLIC_API_KEY ?? "";
+
+async function apiFetch<T>(path: string, options?: RequestInit): Promise<APIResponse<T>> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    ...options,
+    headers: { "X-API-Key": API_KEY, "Content-Type": "application/json", ...options?.headers },
+  });
+  if (!res.ok) throw new Error(`API error ${res.status}: ${path}`);
+  return res.json() as Promise<APIResponse<T>>;
+}
+
+// All typed API functions:
+export const api = {
+  getTopStocks: (params?: { quality?: string; limit?: number; date?: string }) =>
+    apiFetch<StockResult[]>(`/api/v1/stocks/top?${new URLSearchParams(params as Record<string, string>)}`),
+
+  getTrendStocks: (params?: { min_rs?: number; limit?: number }) =>
+    apiFetch<StockResult[]>(`/api/v1/stocks/trend?${new URLSearchParams(params as Record<string, string>)}`),
+
+  getVCPStocks: (params?: { min_quality?: string; limit?: number }) =>
+    apiFetch<StockResult[]>(`/api/v1/stocks/vcp?${new URLSearchParams(params as Record<string, string>)}`),
+
+  getStock: (symbol: string, date?: string) =>
+    apiFetch<StockResult>(`/api/v1/stocks/${symbol}${date ? `?date=${date}` : ""}`),
+
+  getStockHistory: (symbol: string, days?: number) =>
+    apiFetch<{ symbol: string; history: Array<{ run_date: string; score: number; quality: string }> }>(
+      `/api/v1/stocks/${symbol}/history${days ? `?days=${days}` : ""}`
+    ),
+
+  getWatchlist: () => apiFetch<StockResult[]>("/api/v1/watchlist"),
+
+  addToWatchlist: (symbol: string) =>
+    apiFetch(`/api/v1/watchlist/${symbol}`, { method: "POST" }),
+
+  removeFromWatchlist: (symbol: string) =>
+    apiFetch(`/api/v1/watchlist/${symbol}`, { method: "DELETE" }),
+
+  getPortfolio: () => apiFetch<PortfolioSummary>("/api/v1/portfolio"),
+
+  getTrades: (status?: "open" | "closed" | "all") =>
+    apiFetch<Trade[]>(`/api/v1/portfolio/trades${status ? `?status=${status}` : ""}`),
+
+  getHealth: () => apiFetch<{ status: string; last_run: string | null }>("/api/v1/health"),
+
+  getMeta: () => apiFetch<Record<string, unknown>>("/api/v1/meta"),
+
+  triggerRun: (scope: "all" | "watchlist" | "universe") =>
+    apiFetch("/api/v1/run", { method: "POST", body: JSON.stringify({ scope }) }),
+};
+
+--- package.json ---
+
+{
+  "name": "sepa-ai-frontend",
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "next": "14.x",
+    "react": "18.x",
+    "react-dom": "18.x",
+    "swr": "^2.x",
+    "lightweight-charts": "^4.x",
+    "recharts": "^2.x",
+    "lucide-react": "^0.x"
+  },
+  "devDependencies": {
+    "typescript": "^5.x",
+    "@types/react": "^18.x",
+    "tailwindcss": "^3.x",
+    "autoprefixer": "^10.x",
+    "postcss": "^8.x"
+  }
+}
+```
+
+
+---
+
+### PHASE 12 — STEP 2 of 5: Screener Table Page + Shared Components
+
+#### Context files to attach
+- `frontend/lib/types.ts`
+- `frontend/lib/api.ts`
+
+#### Prompt
+```
+You are building the screener page and shared components for the Next.js frontend.
+Project root: /home/ubuntu/projects/sepa_ai/frontend/
+
+TASK: Implement screener page + QualityBadge, ScoreGauge, StockTable components.
+
+--- FILE 1: components/QualityBadge.tsx ---
+
+const QUALITY_STYLES = {
+  "A+": "bg-yellow-400 text-black font-bold",
+  "A":  "bg-green-500 text-white font-bold",
+  "B":  "bg-blue-500 text-white",
+  "C":  "bg-gray-400 text-white",
+  "FAIL": "bg-red-600 text-white",
+};
+
+export function QualityBadge({ quality }: { quality: string }) {
+  return (
+    <span className={`px-2 py-0.5 rounded text-xs ${QUALITY_STYLES[quality] ?? "bg-gray-300"}`}>
+      {quality}
+    </span>
+  );
+}
+
+--- FILE 2: components/ScoreGauge.tsx ---
+
+Visual score gauge (0–100). Use a simple SVG arc or Recharts RadialBar.
+Colour: red (0–40), yellow (41–70), green (71–100).
+Shows score number in centre.
+
+export function ScoreGauge({ score }: { score: number }) { ... }
+
+--- FILE 3: components/NavBar.tsx ---
+
+Responsive top navigation bar with:
+  - Logo: "📈 SEPA AI"
+  - Nav links: Dashboard | Screener | Watchlist | Portfolio
+  - API status indicator (green dot if /api/v1/health returns ok)
+  - Mobile hamburger menu
+
+--- FILE 4: components/StockTable.tsx ---
+
+"use client";
+import useSWR from "swr";
+
+interface StockTableProps {
+  initialData: StockResult[];
+  showWatchlistBadge?: boolean;
+  onRowClick?: (symbol: string) => void;
+}
+
+export function StockTable({ initialData, showWatchlistBadge, onRowClick }: StockTableProps) {
+  // Client-side SWR polling every 60s for live updates
+  // Sortable columns: score (default), symbol, rs_rating, conditions_met
+  // Columns: Symbol | Score | Quality | Stage | TT | VCP | Breakout | Entry | Stop | Risk% | RS
+  // Breakout: 🔴 label when breakout_triggered
+  // Watchlist: ★ prefix when is_watchlist
+  // Clicking a row calls onRowClick(symbol) → navigate to /screener/{symbol}
+  // Mobile: hide Entry/Stop/Risk columns, show only Symbol, Score, Quality
+}
+
+--- FILE 5: app/screener/page.tsx ---
+
+"use client";
+import { useState } from "react";
+import useSWR from "swr";
+
+export default function ScreenerPage() {
+  // Filter controls row: quality multiselect, min_rs slider, limit select, date select
+  // Fetches from /api/v1/stocks/top with filter params (SWR polling 60s)
+  // Renders <StockTable> with onRowClick → router.push(/screener/{symbol})
+  // Export CSV button: triggers CSV download of current filtered results
+  // Summary: "Showing {n} of {total} results | Last updated: {time}"
+}
+
+--- FILE 6: app/layout.tsx ---
+
+Root layout with:
+  - <NavBar /> at top
+  - Tailwind dark/light mode class
+  - Inter font (Google Fonts)
+  - Global meta tags (title, description, viewport)
+  - API status polling in NavBar
+
+--- app/page.tsx (Dashboard Home) ---
+
+Server component. Fetches:
+  - /api/v1/meta → universe size, last run, A+ count
+  - /api/v1/stocks/top?quality=A%2B&limit=5 → top 5 setups
+
+Renders:
+  - Hero row: 4 stat cards (Last Run, A+, A, Universe Size)
+  - "Today's Top Setups" compact table (top 5 A+ only, no filters)
+  - Link: "View all →" to /screener
+```
+
+
+---
+
+### PHASE 12 — STEP 3 of 5: Stock Deep-Dive Page + Chart Components
+
+#### Context files to attach
+- `frontend/lib/types.ts`
+- `frontend/lib/api.ts`
+- `frontend/components/QualityBadge.tsx`
+- `frontend/components/ScoreGauge.tsx`
+
+#### Prompt
+```
+You are building the stock deep-dive page and chart components for the Next.js frontend.
+Project root: /home/ubuntu/projects/sepa_ai/frontend/
+
+TASK: Implement CandlestickChart, TrendTemplateCard, VCPCard, and the Stock page.
+
+--- FILE 1: components/CandlestickChart.tsx ---
+
+"use client";
+import { createChart, CandlestickSeries, LineSeries } from "lightweight-charts";
+import { useEffect, useRef } from "react";
+
+interface OHLCVBar {
+  time: string;    // YYYY-MM-DD
+  open: number; high: number; low: number; close: number;
+}
+
+interface MALine { time: string; value: number; }
+
+interface Props {
+  ohlcv: OHLCVBar[];
+  sma50?: MALine[];
+  sma150?: MALine[];
+  sma200?: MALine[];
+  entryPrice?: number | null;
+  stopLoss?: number | null;
+  height?: number;
+}
+
+export function CandlestickChart({ ohlcv, sma50, sma150, sma200, entryPrice, stopLoss, height = 400 }: Props) {
+  const chartRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!chartRef.current || ohlcv.length === 0) return;
+
+    const chart = createChart(chartRef.current, {
+      width: chartRef.current.clientWidth,
+      height,
+      layout: { background: { color: "#1a1a2e" }, textColor: "#e0e0e0" },
+      grid: { vertLines: { color: "#2a2a3e" }, horzLines: { color: "#2a2a3e" } },
+      timeScale: { timeVisible: true, borderColor: "#3a3a5e" },
+    });
+
+    const candleSeries = chart.addCandlestickSeries({
+      upColor: "#26a69a", downColor: "#ef5350",
+      borderDownColor: "#ef5350", borderUpColor: "#26a69a",
+      wickDownColor: "#ef5350", wickUpColor: "#26a69a",
+    });
+    candleSeries.setData(ohlcv);
+
+    if (sma50)  { const s = chart.addLineSeries({ color: "#3a86ff", lineWidth: 1 }); s.setData(sma50); }
+    if (sma150) { const s = chart.addLineSeries({ color: "#fb8500", lineWidth: 1 }); s.setData(sma150); }
+    if (sma200) { const s = chart.addLineSeries({ color: "#e63946", lineWidth: 2 }); s.setData(sma200); }
+
+    if (entryPrice) { /* add horizontal price line in green */ }
+    if (stopLoss)   { /* add horizontal price line in red */ }
+
+    chart.timeScale().fitContent();
+    return () => chart.remove();
+  }, [ohlcv, sma50, sma150, sma200, entryPrice, stopLoss, height]);
+
+  return <div ref={chartRef} className="w-full rounded-lg overflow-hidden" />;
+}
+
+--- FILE 2: components/TrendTemplateCard.tsx ---
+
+Renders 8 conditions as a 2×4 grid of pass/fail badges.
+Each cell: condition number + short label + ✅ or ❌.
+Header: "Trend Template: {conditions_met}/8 ✅" with colour coding.
+Also shows numeric details (close vs SMA values) in tooltips or expandable section.
+
+--- FILE 3: components/VCPCard.tsx ---
+
+Shows VCP metrics in a compact card:
+  VCP Qualified: ✅ or ❌ (large badge)
+  Contractions: {count} | Max Depth: {pct}% | Final Depth: {pct}%
+  Volume Contraction: {ratio}× | Base: {weeks} weeks | Tightness: {pct}%
+  Small ASCII VCP diagram (or SVG) illustrating the contraction pattern.
+
+--- FILE 4: app/screener/[symbol]/page.tsx ---
+
+Params: { symbol: string }
+Data: Fetches /api/v1/stocks/{symbol} + /api/v1/stocks/{symbol}/history?days=30
+
+Layout (3-column on desktop, stacked on mobile):
+  Left col (2/3 width):
+    - Symbol header: "{SYMBOL} — {setup_quality}" + QualityBadge + ScoreGauge
+    - <CandlestickChart> with data from processed Parquet (served via new API endpoint or pre-computed)
+    - Tabs: Trend Template | VCP | Fundamentals | LLM Brief | History
+
+  Right col (1/3 width):
+    - Score breakdown (weighted component scores as progress bars)
+    - Key stats: Entry, Stop, Risk%, RS Rating, Stage
+    - [⭐ Add to Watchlist] button (calls DELETE /api/v1/watchlist/{symbol})
+    - History chart: score trend over 30 days (Recharts LineChart)
+
+NOTE on OHLCV data for chart:
+  The FastAPI layer does NOT currently serve raw OHLCV data.
+  Add a new endpoint to api/routers/stocks.py:
+    GET /api/v1/stocks/{symbol}/ohlcv?days=90
+    Returns last N days of OHLCV + MA columns from feature Parquet
+  Then use it here.
+```
+
+
+---
+
+### PHASE 12 — STEP 4 of 5: Watchlist + Portfolio Pages
+
+#### Context files to attach
+- `frontend/lib/types.ts`
+- `frontend/lib/api.ts`
+- `frontend/components/StockTable.tsx`
+- `frontend/components/QualityBadge.tsx`
+
+#### Prompt
+```
+You are building the Watchlist and Portfolio pages for the Next.js frontend.
+Project root: /home/ubuntu/projects/sepa_ai/frontend/
+
+TASK: Implement app/watchlist/page.tsx and app/portfolio/page.tsx.
+
+--- FILE 1: app/watchlist/page.tsx ---
+
+"use client";
+
+Layout:
+  Header: "⭐ Watchlist" + [🚀 Run Now] button
+
+  Watchlist management card:
+    - Current symbols table: symbol, score, quality, added_at
+    - [+ Add Symbol] input + button
+    - [✕] remove button per row
+    - "Powered by real-time API" note
+
+  Results table:
+    <StockTable initialData={watchlistResults} showWatchlistBadge />
+    SWR polling every 30s for live updates
+
+  [🚀 Run Watchlist Now]:
+    Calls POST /api/v1/run {"scope":"watchlist"}
+    Shows: "⏳ Running..." spinner → "✅ Done — {n} symbols screened" toast
+
+--- FILE 2: app/portfolio/page.tsx ---
+
+"use client";
+
+Layout:
+  Header: "💼 Paper Trading Portfolio"
+
+  Summary cards row (4 columns, Recharts RadialBar for Return%):
+    Total Return | Realised P&L | Win Rate | Open Positions
+
+  Equity curve (Recharts AreaChart):
+    X: date, Y: total_value
+    Baseline: initial_capital as dashed line
+
+  Tabs:
+    Tab "Open Positions":
+      Table: symbol, entry, current price (from API), unrealised P&L%, days held, stop
+      P&L colour: green if > 0, red if < 0
+      Refresh button (re-fetches current prices)
+
+    Tab "Closed Trades":
+      Table: symbol, entry, exit, P&L%, R-multiple, exit reason
+      Colour rows: green if pnl > 0, red if pnl < 0
+      R-multiple > 2.0: bold gold text
+
+    Tab "Statistics":
+      Win rate by quality (Recharts BarChart)
+      Monthly P&L (Recharts BarChart, green/red bars)
+      Hold time distribution (Recharts BarChart buckets)
+
+  If no trades yet:
+    Empty state card: "No paper trades yet. The pipeline creates trades automatically after each daily screen."
+
+--- SHARED: PortfolioSummary.tsx ---
+
+Reusable component for the 4-metric summary card row.
+Props: summary: PortfolioSummary
+Shows: Total Return %, Realised P&L (₹), Win Rate %, Open Count
+
+--- MOBILE RESPONSIVENESS ---
+
+All pages must work on 375px viewport (iPhone SE):
+  - Tables scroll horizontally (overflow-x-auto wrapper)
+  - Summary cards: 2×2 grid on mobile, 4×1 on desktop
+  - NavBar: hamburger menu on mobile
+  - Chart height reduced to 280px on mobile
+  - Tab labels: icon-only on mobile, icon+text on desktop
+```
+
+
+---
+
+### PHASE 12 — STEP 5 of 5: Vercel Deployment + Final Polish
+
+#### Context files to attach
+- `frontend/package.json`
+- All pages and components from steps 1–4
+- `api/routers/stocks.py` (need new OHLCV endpoint)
+
+#### Prompt
+```
+You are finalising the Next.js frontend for production deployment.
+Project root: /home/ubuntu/projects/sepa_ai/frontend/
+
+TASK: Add OHLCV API endpoint, environment config, Vercel deployment config, and final polish.
+
+--- FILE 1: Add to api/routers/stocks.py ---
+
+@router.get("/{symbol}/ohlcv", response_model=APIResponse[list[dict]])
+async def get_stock_ohlcv(
+    symbol: str,
+    days: int = 90,
+    db: SQLiteStore = Depends(get_db),
+    _: str = Depends(require_read_key),
+):
+    """
+    Returns last N days of OHLCV + MA columns for chart rendering.
+    Reads from data/features/{symbol}.parquet (last `days` rows).
+    Returns list of dicts: {date, open, high, low, close, volume, sma_50, sma_150, sma_200, vol_ratio}
+    Returns 404 if symbol not found.
+    """
+
+--- FILE 2: frontend/.env.example ---
+
+NEXT_PUBLIC_API_URL=http://localhost:8000
+NEXT_PUBLIC_API_KEY=your_read_key_here
+
+--- FILE 3: frontend/.env.production ---
+
+NEXT_PUBLIC_API_URL=https://your-shreevault-domain-or-ip:8000
+NEXT_PUBLIC_API_KEY=your_read_key_here
+
+--- FILE 4: frontend/vercel.json ---
+
+{
+  "buildCommand": "npm run build",
+  "outputDirectory": ".next",
+  "framework": "nextjs",
+  "rewrites": [
+    {
+      "source": "/api/:path*",
+      "destination": "https://your-api-server:8000/api/:path*"
+    }
+  ]
+}
+
+Note: The API rewrite in vercel.json proxies requests to ShreeVault.
+This avoids CORS issues and hides the API key from the browser.
+Update the destination URL to your actual server IP/domain.
+
+--- FILE 5: frontend/next.config.ts ---
+
+const nextConfig = {
+  async rewrites() {
+    return [
+      {
+        source: "/api/:path*",
+        destination: `${process.env.NEXT_PUBLIC_API_URL}/api/:path*`,
+      },
+    ];
+  },
+  images: { unoptimized: true },
+};
+export default nextConfig;
+
+--- FINAL POLISH CHECKLIST ---
+
+Implement these small improvements across all pages:
+
+1. Loading skeletons (Tailwind animate-pulse) while SWR fetches
+2. Error boundaries: if API unreachable, show "API offline" banner (not crash)
+3. Empty state cards for all tables (no raw "no data" text)
+4. Favicon: 📈 emoji favicon (public/favicon.ico)
+5. Toast notifications for actions: "Added RELIANCE to watchlist ✅"
+6. Keyboard navigation: Enter key submits "Add Symbol" input
+7. Print-friendly CSS: @media print hides NavBar and buttons
+
+--- DEPLOYMENT STEPS (document in frontend/README.md) ---
+
+# Quick Deploy to Vercel
+
+1. Push code to GitHub
+2. Connect repo to Vercel (vercel.com → Import Project)
+3. Set env vars in Vercel dashboard:
+     NEXT_PUBLIC_API_URL = https://your-server:8000
+     NEXT_PUBLIC_API_KEY = your_read_key
+4. Deploy → get public URL
+
+# Local Development
+
+cd frontend
+npm install
+npm run dev   # starts at http://localhost:3000
+# Make sure FastAPI is running at http://localhost:8000
+
+# Production build test
+
+npm run build && npm run start
+
+--- MAKEFILE ADDITION ---
+
+Add to root Makefile:
+  frontend-dev:
+      cd frontend && npm run dev
+
+  frontend-build:
+      cd frontend && npm run build
+
+  frontend-deploy:
+      cd frontend && npx vercel --prod
+```
+
+
+---
+---
+
+## APPENDIX — Quick Reference: Prompt Usage Guide
+
+### How to use these prompts
+
+Each prompt block is designed for a **fresh Claude session**. Follow this pattern:
+
+```
+1. Open a new Claude session
+2. Attach the listed "Context files" (use filesystem read or paste content)
+3. Paste the entire prompt block from the ``` code fence
+4. Let Claude implement the files
+5. Review, run tests: make test
+6. Fix any issues in the same session
+7. Commit: git add -A && git commit -m "Phase N Step M: description"
+8. Move to next prompt
+```
+
+### Recommended session size per step
+
+| Phase | Step | Estimated files | Session complexity |
+|-------|------|-----------------|-------------------|
+| 3     | 1–4  | 1–4 files each  | Low–Medium |
+| 3     | 5    | 2 files         | Medium |
+| 4     | 1–5  | 1–3 files each  | Medium |
+| 5     | 1–4  | 1–4 files each  | Medium |
+| 6     | 1–4  | 2–3 files each  | Medium |
+| 7     | 1–4  | 1–2 files each  | Low–Medium |
+| 8     | 1–5  | 2–3 files each  | Medium–High |
+| 9     | 1–4  | mixed           | Medium |
+| 10    | 1–5  | 2–3 files each  | Medium |
+| 11    | 1–5  | 2–3 files each  | Medium |
+| 12    | 1–5  | 2–4 files each  | Medium–High |
+
+### After each phase completes
+
+Run the full test suite to catch regressions:
+```bash
+make test          # all unit + integration tests
+make lint          # ruff check
+```
+
+Update BUILD_STATUS.md to mark completed tasks.
+
+### If a session runs out of context
+
+Split the step into smaller sub-steps. For example, Phase 8 Step 2 (engine.py) can be split:
+  - Sub-step A: BacktestTrade dataclass + simulate_trade()
+  - Sub-step B: run_backtest() + BacktestResult
+
+---
+
+*PROMPTS.md — Minervini SEPA AI — Phases 3–12 build prompts*
+*Generated: 2026-04-28 | Project: /home/ubuntu/projects/sepa_ai/*

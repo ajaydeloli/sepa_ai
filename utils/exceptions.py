@@ -125,3 +125,21 @@ class ConfigurationError(SEPABaseError):
     Examples: negative lookback window, unknown data-source name,
     or a required key that is absent from the config file.
     """
+
+
+# ---------------------------------------------------------------------------
+# Reports / chart generation
+# ---------------------------------------------------------------------------
+
+
+class ChartGenerationError(SEPABaseError):
+    """Raised when a candlestick chart cannot be produced.
+
+    Typical triggers
+    ----------------
+    * Empty or None OHLCV DataFrame passed to generate_chart()
+    * mplfinance / matplotlib rendering failure
+    * Output directory cannot be created (permission error)
+
+    The underlying exception is stored in ``__cause__`` via ``raise ... from exc``.
+    """
