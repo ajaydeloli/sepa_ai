@@ -143,3 +143,33 @@ class ChartGenerationError(SEPABaseError):
 
     The underlying exception is stored in ``__cause__`` via ``raise ... from exc``.
     """
+
+
+# ---------------------------------------------------------------------------
+# LLM / AI client
+# ---------------------------------------------------------------------------
+
+
+class LLMError(SEPABaseError):
+    """Raised on an unrecoverable failure during an LLM completion call.
+
+    Wraps provider-specific exceptions (openai.APIError, anthropic errors,
+    HTTP failures) so callers only need to handle one type for all LLM
+    backends.  The underlying cause is preserved via ``raise ... from exc``.
+    """
+
+
+class LLMUnavailableError(LLMError):
+    """Raised when an LLM provider cannot be reached or is not configured.
+
+    Typical triggers
+    ----------------
+    * API key environment variable is missing or empty
+    * Ollama localhost:11434 is not listening
+    * Network unreachable before a request is even attempted
+
+    This is a sub-class of LLMError so callers that catch LLMError will
+    also catch unavailability; callers that need to distinguish between
+    "service is down" and "call failed mid-flight" can catch this type
+    specifically.
+    """

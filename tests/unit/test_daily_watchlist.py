@@ -174,6 +174,44 @@ class TestGenerateHtmlReport:
         html = Path(path).read_text(encoding="utf-8")
         assert "AI Brief:" not in html
 
+    def test_llm_brief_hidden_when_empty_dict(self, sample_results, run_date, tmp_path):
+        """llm_briefs={} → no brief section rendered, no crash."""
+        path = generate_html_report(
+            sample_results, str(tmp_path), run_date, llm_briefs={}
+        )
+        html = Path(path).read_text(encoding="utf-8")
+        assert "AI Brief:" not in html
+
+    def test_watchlist_summary_shown_when_provided(self, sample_results, run_date, tmp_path):
+        """watchlist_summary string → market-commentary section appears in HTML."""
+        summary_text = "Broad market participation with 8 quality setups across sectors."
+        path = generate_html_report(
+            sample_results, str(tmp_path), run_date,
+            watchlist_summary=summary_text,
+        )
+        html = Path(path).read_text(encoding="utf-8")
+        assert "market-commentary" in html
+        assert "Daily Market Commentary" in html
+        assert "Broad market participation" in html
+
+    def test_watchlist_summary_absent_when_none(self, sample_results, run_date, tmp_path):
+        """No watchlist_summary → commentary section not rendered, no crash."""
+        path = generate_html_report(sample_results, str(tmp_path), run_date)
+        html = Path(path).read_text(encoding="utf-8")
+        assert "Daily Market Commentary" not in html
+
+    def test_brief_text_is_html_escaped(self, sample_results, run_date, tmp_path):
+        """Brief containing <, >, & is escaped by Jinja2 autoescape — never raw HTML."""
+        briefs = {"AAPL": "EPS > 20% & revenue < estimates; watch <AAPL>."}
+        path = generate_html_report(
+            sample_results, str(tmp_path), run_date, llm_briefs=briefs
+        )
+        html = Path(path).read_text(encoding="utf-8")
+        # Raw dangerous characters must not appear unescaped in the brief section
+        assert "<AAPL>" not in html
+        # Jinja2 autoescape should have encoded them as HTML entities
+        assert "&lt;" in html or "&#" in html
+
     def test_run_date_in_title(self, sample_results, run_date, tmp_path):
         path = generate_html_report(sample_results, str(tmp_path), run_date)
         html = Path(path).read_text(encoding="utf-8")

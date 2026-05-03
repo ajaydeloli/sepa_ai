@@ -112,6 +112,18 @@
     .fii-rising  { color: #3fb950; }
     .fii-falling { color: #f85149; }
 
+    /* ── Market commentary (LLM watchlist summary) ── */
+    .market-commentary {
+      background: #161b22; border: 1px solid #30363d;
+      border-radius: 8px; padding: 14px 18px; margin-bottom: 20px;
+    }
+    .market-commentary h2 {
+      font-size: 0.95rem; font-weight: 700; color: #f0f6fc; margin-bottom: 8px;
+    }
+    .market-commentary p {
+      font-size: 0.85rem; color: #8b949e; line-height: 1.55;
+    }
+
     /* ── LLM brief row ── */
     .brief-row td {
       padding: 6px 12px 12px 32px;
@@ -134,6 +146,14 @@
     <h1>SEPA Watchlist</h1>
     <span class="run-date">{{ run_date }}</span>
   </div>
+
+  <!-- ══ Market commentary (LLM watchlist summary) ══ -->
+  {%- if has_watchlist_summary %}
+  <div class="market-commentary">
+    <h2>📊 Daily Market Commentary</h2>
+    <p>{{ watchlist_summary }}</p>
+  </div>
+  {%- endif %}
 
   <!-- ══ Summary bar ══ -->
   <div class="summary-bar">

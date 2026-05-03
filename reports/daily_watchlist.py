@@ -168,6 +168,7 @@ def generate_html_report(
     run_date: date,
     watchlist_symbols: list[str] = None,
     llm_briefs: dict[str, str] = None,
+    watchlist_summary: Optional[str] = None,
     include_all: bool = False,
 ) -> str:
     """
@@ -176,6 +177,9 @@ def generate_html_report(
 
     *llm_briefs* maps symbol → plain-text brief produced by an LLM.
     When ``None`` (or an empty dict) the brief rows are hidden in the template.
+
+    *watchlist_summary* is a short LLM-generated market commentary shown
+    at the top of the report.  Omitted when ``None``.
 
     Returns the path to the written file.
     """
@@ -217,6 +221,8 @@ def generate_html_report(
         rows=rows,
         summary=summary,
         has_briefs=bool(llm_briefs),
+        watchlist_summary=watchlist_summary,
+        has_watchlist_summary=bool(watchlist_summary),
         no_candidates=len(rows) == 0,
     )
 

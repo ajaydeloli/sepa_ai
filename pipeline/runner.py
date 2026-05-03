@@ -54,7 +54,8 @@ from reports.daily_watchlist import (
 )
 from screener.pipeline import run_screen
 from screener.results import persist_results
-from storage.parquet_store import append_row, read_parquet
+from llm.explainer import generate_batch_briefs, generate_watchlist_summary
+from storage.parquet_store import append_row, read_last_n_rows, read_parquet
 from storage.sqlite_store import SQLiteStore
 from utils.exceptions import FeatureStoreOutOfSyncError
 from utils.logger import get_logger
@@ -252,6 +253,7 @@ def run_daily(ctx: RunContext) -> dict:
         "report_csv": "",
         "report_html": "",
         "alerts_sent": 0,
+        "llm_briefs_generated": 0,
     }
 
     try:
@@ -421,15 +423,7 @@ def run_daily(ctx: RunContext) -> dict:
         except Exception as exc:
             log.error("Step 8 (CSV report) failed: %s", exc)
 
-        # Step 9 — HTML report
-        try:
-            html_path = generate_html_report(
-                results, output_dir, run_date, watchlist_symbols
-            )
-            summary["report_html"] = html_path
-            log.info("Step 9: HTML report → %s", html_path)
-        except Exception as exc:
-            log.error("Step 9 (HTML report) failed: %s", exc)
+        # Step 9 — HTML report (generated after LLM briefs; see Step 10b/10c below)
 
         # Step 10 — Batch charts
         chart_paths: dict[str, str] = {}
@@ -449,6 +443,42 @@ def run_daily(ctx: RunContext) -> dict:
             log.info("Step 10: generated %d charts", len(chart_paths))
         except Exception as exc:
             log.error("Step 10 (charts) failed: %s", exc)
+
+        # Step 10b — LLM trade briefs (non-critical; cosmetic annotation only)
+        # If llm.enabled=False or the LLM is unavailable the pipeline continues
+        # normally; llm_briefs stays empty and watchlist_summary stays None.
+        llm_briefs: dict[str, str] = {}
+        watchlist_summary: str | None = None
+        try:
+            if config.get("llm", {}).get("enabled", False):
+                qualifying = [r for r in results if r.setup_quality in ("A+", "A")]
+                ohlcv_for_llm = {
+                    r.symbol: read_last_n_rows(processed_dir / f"{r.symbol}.parquet", 5)
+                    for r in qualifying
+                }
+                llm_briefs = generate_batch_briefs(qualifying, ohlcv_for_llm, config)
+                watchlist_summary = generate_watchlist_summary(results, run_date, config)
+                summary["llm_briefs_generated"] = len(llm_briefs)
+                log.info("Step 10b: %d LLM briefs generated", len(llm_briefs))
+            else:
+                log.debug("Step 10b: llm.enabled=False — skipping briefs")
+        except Exception as exc:
+            log.error("Step 10b (LLM briefs) failed: %s", exc)
+
+        # Step 10c — HTML report (rendered after LLM briefs so briefs are included)
+        try:
+            html_path = generate_html_report(
+                results,
+                output_dir,
+                run_date,
+                watchlist_symbols,
+                llm_briefs=llm_briefs,
+                watchlist_summary=watchlist_summary,
+            )
+            summary["report_html"] = html_path
+            log.info("Step 10c: HTML report → %s", html_path)
+        except Exception as exc:
+            log.error("Step 10c (HTML report) failed: %s", exc)
 
         # Step 11 — Filter alertable results via deduplication logic
         alertable: list = []

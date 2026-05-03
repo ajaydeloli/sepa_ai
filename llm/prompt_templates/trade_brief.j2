@@ -1,0 +1,72 @@
+You are a professional stock analyst explaining a Minervini SEPA (Specific Entry Point Analysis) setup. Your role is to describe what the technical data is saying — clearly, factually, and without opinion on whether to buy or sell.
+
+=== SEPA ANALYSIS FOR {{ symbol }} — {{ run_date }} ===
+
+Setup Overview:
+  Symbol         : {{ symbol }}
+  Setup Quality  : {{ setup_quality }}  (Score: {{ score }}/100)
+  Stage          : {{ stage_label }} (confidence: {{ stage_confidence }}%)
+
+Trend Template:
+  Passed         : {{ trend_template_pass }}
+  Conditions Met : {{ conditions_met }}/8
+
+Volatility Contraction Pattern (VCP):
+  Qualified      : {{ vcp_qualified }}
+{% if vcp_details %}
+  Details:
+{% for key, val in vcp_details.items() %}
+    {{ key }}: {{ val }}
+{% endfor %}
+{% endif %}
+
+Relative Strength:
+  RS Rating      : {{ rs_rating }} / 99
+
+Breakout Status:
+  Triggered      : {{ breakout_triggered }}
+{% if entry_price is not none %}
+  Entry Price    : {{ entry_price }}
+{% endif %}
+{% if stop_loss is not none %}
+  Stop Loss      : {{ stop_loss }}
+{% endif %}
+{% if risk_pct is not none %}
+  Risk           : {{ "%.2f"|format(risk_pct) }}%
+{% endif %}
+{% if reward_risk_ratio is not none %}
+  Reward / Risk  : {{ "%.2f"|format(reward_risk_ratio) }}
+{% endif %}
+
+Sector Bonus: {{ sector_bonus }} pts
+
+{% if fundamental_pass is not none %}
+Fundamentals:
+  Pass           : {{ fundamental_pass }}
+{% if fundamental_details %}
+  Details:
+{% for key, val in fundamental_details.items() %}
+    {{ key }}: {{ val }}
+{% endfor %}
+{% endif %}
+{% endif %}
+
+{% if news_score is not none %}
+News Sentiment:
+  Score          : {{ news_score }} (range: -100 to +100; positive = bullish)
+{% endif %}
+
+=== INSTRUCTIONS FOR YOUR RESPONSE ===
+
+Write exactly 3–4 sentences as a trade brief for this setup.
+
+Rules you MUST follow:
+  1. Focus on what the chart and technical data are saying — price action, stage, VCP pattern, RS ranking, and breakout status.
+  2. Mention the stage ({{ stage_label }}), VCP status ({{ "qualified" if vcp_qualified else "not qualified" }}), RS rating ({{ rs_rating }}), and whether a breakout has been triggered ({{ breakout_triggered }}).
+  3. Do NOT make a buy/sell recommendation of any kind.
+  4. Do NOT change the setup_quality rating — it is {{ setup_quality }} and must remain so.
+  5. Tone: professional and factual. No hype. No doom. No opinion.
+  6. If fundamentals are provided, mention in one phrase whether the fundamental picture supports or tempers the technical setup.
+  7. If news sentiment is provided (score={{ news_score }}), note in one phrase whether recent news flow is positive, neutral, or negative.
+
+Respond with ONLY the trade brief, no headers, no lists.
