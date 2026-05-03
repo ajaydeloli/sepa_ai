@@ -63,6 +63,12 @@ _CFG: dict = {
         "fixed_stop_pct": 0.07,
     },
     "risk_reward": {"min_rr_ratio": 2.0},
+    # Disable fundamentals processing in the base config so that tests using
+    # _run() with a stub fundamental_result dict (e.g. {"score": 50.0}) get
+    # the neutral fallback (50) rather than triggering check_fundamental_template
+    # which re-evaluates all 7 conditions from scratch and would score 0.
+    # Phase 5 tests that need fundamentals enabled explicitly use _CFG_WITH_FUND.
+    "fundamentals": {"enabled": False},
 }
 
 _TODAY = date(2025, 1, 15)
@@ -521,6 +527,156 @@ class TestDataclassSerialisability:
             assert result.setup_quality in valid, (
                 f"Invalid quality {result.setup_quality!r} for stage {stage}"
             )
+
+
+# ===========================================================================
+# Phase 5 — Test P1: fundamental_result with passes=True → fundamental_pass=True
+# ===========================================================================
+
+_FULL_FUNDAMENTALS: dict = {
+    "eps": 12.5,
+    "eps_accelerating": True,
+    "sales_growth_yoy": 25.0,
+    "roe": 22.0,
+    "debt_to_equity": 0.4,
+    "promoter_holding": 55.0,
+    "profit_growth": 18.0,
+}
+
+_CFG_WITH_FUND = dict(_CFG) | {
+    "fundamentals": {
+        "enabled": True,
+        "hard_gate": False,
+        "conditions": {
+            "min_roe": 15.0,
+            "max_de": 1.0,
+            "min_promoter_holding": 35.0,
+            "min_sales_growth_yoy": 10.0,
+        },
+    }
+}
+
+_CFG_HARD_GATE = dict(_CFG_WITH_FUND) | {
+    "fundamentals": dict(_CFG_WITH_FUND["fundamentals"]) | {"hard_gate": True}
+}
+
+_FAIL_FUNDAMENTALS: dict = {
+    "eps": -5.0,           # F1 fail
+    "eps_accelerating": False,
+    "sales_growth_yoy": 2.0,
+    "roe": 5.0,
+    "debt_to_equity": 3.0,
+    "promoter_holding": 10.0,
+    "profit_growth": -1.0,
+}
+
+
+def _run_with_config(config: dict, fundamental_result=None, news_score=None) -> "SEPAResult":
+    row = _make_row(rs_rating=80)
+    symbol_info = _make_symbol_info(_SYMBOL, "Technology")
+    return score_symbol(
+        symbol=_SYMBOL,
+        run_date=_TODAY,
+        row=row,
+        stage_result=_make_stage(2),
+        tt_result=_make_tt(8),
+        vcp_metrics=_make_vcp(is_valid=True),
+        sector_ranks={},
+        symbol_info=symbol_info,
+        config=config,
+        fundamental_result=fundamental_result,
+        news_score=news_score,
+    )
+
+
+class TestPhase5FundamentalsPass:
+    """P1: fundamental_result with passes=True → result.fundamental_pass=True."""
+
+    def test_fundamental_pass_true_when_all_conditions_met(self):
+        result = _run_with_config(_CFG_WITH_FUND, fundamental_result=_FULL_FUNDAMENTALS)
+        assert result.fundamental_pass is True
+
+    def test_fundamental_details_populated(self):
+        result = _run_with_config(_CFG_WITH_FUND, fundamental_result=_FULL_FUNDAMENTALS)
+        assert result.fundamental_details != {}
+        assert "f1_eps_positive" in result.fundamental_details
+        assert result.fundamental_details["f1_eps_positive"] is True
+
+    def test_fundamental_score_reflected_in_higher_total(self):
+        """All-pass fundamentals (score=100) should yield a higher total than all-fail."""
+        result_pass = _run_with_config(_CFG_WITH_FUND, fundamental_result=_FULL_FUNDAMENTALS)
+        result_fail = _run_with_config(_CFG_WITH_FUND, fundamental_result=_FAIL_FUNDAMENTALS)
+        # Weight=0.07; difference = (100 - 0) * 0.07 ≈ 7 points
+        assert result_pass.score > result_fail.score
+
+
+class TestPhase5HardGate:
+    """P2: fundamentals.hard_gate=True + fundamentals failed → quality forced to FAIL."""
+
+    def test_hard_gate_downgrades_to_fail(self):
+        result = _run_with_config(_CFG_HARD_GATE, fundamental_result=_FAIL_FUNDAMENTALS)
+        assert result.setup_quality == "FAIL"
+
+    def test_score_preserved_despite_fail_quality(self):
+        """Score should be >0 even when quality is forced to FAIL by hard gate."""
+        result = _run_with_config(_CFG_HARD_GATE, fundamental_result=_FAIL_FUNDAMENTALS)
+        # Stage 2 with good TT/VCP/RS → weighted score > 0 before hard gate
+        assert result.score > 0
+
+    def test_hard_gate_false_does_not_downgrade(self):
+        """hard_gate=False: failing fundamentals lower score but don't force FAIL."""
+        result = _run_with_config(_CFG_WITH_FUND, fundamental_result=_FAIL_FUNDAMENTALS)
+        # With hard_gate=False, a strong TT+RS stock can still be B or better
+        assert result.setup_quality != "FAIL" or result.score < 40  # normal quality logic
+
+
+class TestPhase5NewsPenalty:
+    """P3: news_score=-80 → normalised to 10, penalises overall score."""
+
+    def test_very_negative_news_normalises_to_10(self):
+        """(-80 + 100) / 2 = 10.  Verify it's used rather than neutral 50."""
+        # Score with very negative news should be lower than with neutral news
+        common = dict(stage=2, conditions_met=8, vcp_valid=True, rs_rating=80)
+        result_neg  = _run(**common, news_score=-80.0)
+        result_neut = _run(**common, news_score=None)   # neutral → 50
+        # news weight=0.06; normalised delta=(50-10)*0.06=2.4 points
+        assert result_neut.score > result_neg.score
+
+    def test_news_score_stored_as_raw_on_result(self):
+        result = _run(news_score=-80.0)
+        assert result.news_score == pytest.approx(-80.0)
+
+    def test_very_positive_news_raises_score(self):
+        common = dict(stage=2, conditions_met=7, vcp_valid=True, rs_rating=75)
+        result_pos  = _run(**common, news_score=+100.0)   # normalised → 100
+        result_neut = _run(**common, news_score=None)      # neutral → 50
+        assert result_pos.score >= result_neut.score
+
+
+class TestPhase5NeutralFallbacks:
+    """P4 & P5: None inputs produce neutral (50) score without exceptions."""
+
+    def test_fundamental_none_no_exception(self):
+        # Must not raise
+        result = _run(stage=2, conditions_met=7, vcp_valid=True, fundamental_result=None)
+        assert isinstance(result, SEPAResult)
+
+    def test_fundamental_none_uses_neutral_50(self):
+        common = dict(stage=2, conditions_met=7, vcp_valid=True, rs_rating=75)
+        result_none    = _run(**common, fundamental_result=None)
+        result_neutral = _run(**common, fundamental_result={"score": 50.0})
+        assert result_none.score == result_neutral.score
+
+    def test_news_none_no_exception(self):
+        result = _run(stage=2, conditions_met=7, vcp_valid=True, news_score=None)
+        assert isinstance(result, SEPAResult)
+
+    def test_news_none_uses_neutral_50(self):
+        """news_score=None → normalised 50; news_score=0 → (0+100)/2=50. Must match."""
+        common = dict(stage=2, conditions_met=7, vcp_valid=True, rs_rating=75)
+        result_none    = _run(**common, news_score=None)
+        result_zero    = _run(**common, news_score=0.0)
+        assert result_none.score == result_zero.score
 
 
 # ===========================================================================

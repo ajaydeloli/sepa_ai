@@ -69,7 +69,11 @@ def _fmt_pct(value: float | None) -> str:
 
 
 def _build_symbol_message(r: SEPAResult, in_watchlist: bool) -> str:
-    """Compose the Markdown message body for a single symbol."""
+    """Compose the Markdown message body for a single symbol.
+
+    Kept under ~1000 chars (Telegram message limit).
+    Fundamental and news lines are omitted when data is unavailable.
+    """
     lines: list[str] = []
 
     if in_watchlist:
@@ -91,7 +95,38 @@ def _build_symbol_message(r: SEPAResult, in_watchlist: bool) -> str:
     )
     lines.append(f"RS Rating: {r.rs_rating}")
 
-    return "\n".join(lines)
+    # ── Fundamental line (Phase 5) ────────────────────────────────────────
+    fd = r.fundamental_details or {}
+    if fd:
+        vals = fd.get("values", {})
+        eps_icon = "▲ Accelerating" if fd.get("f2_eps_accelerating") else "— Flat"
+        parts = [f"EPS: {eps_icon}"]
+        roe = vals.get("roe")
+        de  = vals.get("de_ratio")
+        prm = vals.get("promoter_holding")
+        if roe is not None:
+            parts.append(f"ROE: {roe:.1f}%")
+        if de is not None:
+            parts.append(f"D/E: {de:.2f}")
+        if prm is not None:
+            parts.append(f"Promoter: {prm:.1f}%")
+        lines.append(" | ".join(parts))
+
+    # ── News line (Phase 5) ───────────────────────────────────────────────
+    if r.news_score is not None:
+        if r.news_score > 15:
+            news_str = f"News: 🟢 Positive (+{r.news_score:.0f})"
+        elif r.news_score < -15:
+            news_str = f"News: 🔴 Negative ({r.news_score:.0f})"
+        else:
+            news_str = f"News: ⚪ Neutral ({r.news_score:+.0f})"
+        lines.append(news_str)
+
+    msg = "\n".join(lines)
+    # Hard-trim to 1000 chars (Telegram limit)
+    if len(msg) > 1000:
+        msg = msg[:997] + "…"
+    return msg
 
 def _send_one(bot, chat_id: str, text: str, photo_path: str | None = None) -> bool:
     """Send a single Telegram message (text or photo).  Returns True on success."""

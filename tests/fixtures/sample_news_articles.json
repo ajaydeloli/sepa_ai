@@ -1,0 +1,65 @@
+[
+  {
+    "title": "Reliance Industries posts record high quarterly profit, beat estimates",
+    "description": "Reliance Industries (RIL) reported strong earnings with profit rise of 18% YoY, beating analyst estimates on the back of its petrochemicals expansion.",
+    "link": "https://www.moneycontrol.com/news/reliance-record-profit.html",
+    "published": "2024-06-15T10:30:00+00:00",
+    "source": "www.moneycontrol.com",
+    "keyword_sentiment": "bullish",
+    "keyword_score": 1.0
+  },
+  {
+    "title": "Markets decline amid weak global cues; Nifty50 slips below 22000",
+    "description": "Indian equity markets declined sharply today as weak global cues and disappoints from overseas markets weighed on sentiment.",
+    "link": "https://economictimes.indiatimes.com/news/market-decline.html",
+    "published": "2024-06-15T09:00:00+00:00",
+    "source": "economictimes.indiatimes.com",
+    "keyword_sentiment": "bearish",
+    "keyword_score": -1.0
+  },
+  {
+    "title": "TCS bags deal win worth $500 million from European client",
+    "description": "Tata Consultancy (TCS) announced a major deal win of $500 million for a 5-year engagement, signalling strong outperform guidance.",
+    "link": "https://www.business-standard.com/news/tcs-deal-win.html",
+    "published": "2024-06-14T14:00:00+00:00",
+    "source": "www.business-standard.com",
+    "keyword_sentiment": "bullish",
+    "keyword_score": 1.0
+  },
+  {
+    "title": "HDFC Bank faces SEBI notice over disclosure norms",
+    "description": "HDFC Bank received a SEBI notice for alleged non-compliance with disclosure requirements. Penalty could be levied pending investigation.",
+    "link": "https://www.moneycontrol.com/news/hdfc-sebi-notice.html",
+    "published": "2024-06-13T11:15:00+00:00",
+    "source": "www.moneycontrol.com",
+    "keyword_sentiment": "bearish",
+    "keyword_score": -1.0
+  },
+  {
+    "title": "Dixon Technologies wins fresh order from Samsung for LED manufacturing",
+    "description": "Dixon Tech announced an order win from Samsung Electronics for manufacturing LED TVs under the PLI scheme, expanding its production capacity.",
+    "link": "https://www.moneycontrol.com/news/dixon-order-win.html",
+    "published": "2024-06-12T08:45:00+00:00",
+    "source": "www.moneycontrol.com",
+    "keyword_sentiment": "bullish",
+    "keyword_score": 1.0
+  },
+  {
+    "title": "Infosys Q1 results miss street estimates; margin pressure continues",
+    "description": "Infosys (INFY) reported below estimates revenue growth for Q1. Margin pressure from wage hikes and weak demand guidance disappointed investors.",
+    "link": "https://economictimes.indiatimes.com/news/infosys-miss.html",
+    "published": "2024-06-11T12:00:00+00:00",
+    "source": "economictimes.indiatimes.com",
+    "keyword_sentiment": "bearish",
+    "keyword_score": -1.0
+  },
+  {
+    "title": "General market update: NSE trading volumes stable",
+    "description": "The National Stock Exchange reported stable trading volumes with no major corporate announcements scheduled for today.",
+    "link": "https://www.business-standard.com/news/nse-volumes.html",
+    "published": "2024-06-10T09:30:00+00:00",
+    "source": "www.business-standard.com",
+    "keyword_sentiment": "neutral",
+    "keyword_score": 0.0
+  }
+]

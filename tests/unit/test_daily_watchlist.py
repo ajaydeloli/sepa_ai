@@ -229,3 +229,98 @@ class TestEmptyResults:
         summary = get_report_summary([])
         assert summary["total_screened"] == 0
         assert all(v == 0 for k, v in summary.items() if k != "total_screened")
+
+
+# ---------------------------------------------------------------------------
+# Phase 5 — Test P6: HTML shows F-conditions table when fundamental_details present
+# ---------------------------------------------------------------------------
+
+class TestHtmlFundamentals:
+    """P6 & P7: fundamental_details in SEPAResult drives fundamentals card in HTML."""
+
+    def _make_result_with_fundamentals(self) -> SEPAResult:
+        """SEPAResult with a fully populated fundamental_details dict."""
+        fd = {
+            "passes": True,
+            "conditions_met": 7,
+            "f1_eps_positive": True,
+            "f2_eps_accelerating": True,
+            "f3_sales_growth": True,
+            "f4_roe": True,
+            "f5_de_ratio": True,
+            "f6_promoter_holding": True,
+            "f7_profit_growth": True,
+            "score": 100,
+            "hard_fails": [],
+            "values": {
+                "eps": 12.5,
+                "eps_accelerating": True,
+                "sales_growth_yoy": 25.0,
+                "roe": 24.3,
+                "de_ratio": 0.4,
+                "promoter_holding": 52.1,
+                "profit_growth": 18.0,
+            },
+        }
+        r = _make_result("FUNDCO", 88, "A+", stage=2)
+        # Patch in Phase 5 fields
+        r.fundamental_pass = True
+        r.fundamental_details = fd
+        r.news_score = 42.0
+        return r
+
+    def _make_result_no_fundamentals(self) -> SEPAResult:
+        """SEPAResult with empty fundamental_details (Phase 3 / data unavailable)."""
+        r = _make_result("NOFUND", 72, "A", stage=2)
+        r.fundamental_pass = False
+        r.fundamental_details = {}
+        r.news_score = None
+        return r
+
+    def test_fundamental_conditions_table_shown(self, run_date, tmp_path):
+        """P6: HTML with fundamental_details → fund-card div with F-conditions."""
+        results = [self._make_result_with_fundamentals()]
+        path = generate_html_report(results, str(tmp_path), run_date, include_all=True)
+        html = Path(path).read_text(encoding="utf-8")
+        assert "fund-card" in html, "Expected fundamental conditions card in HTML"
+        assert "F1 EPS" in html
+        assert "F4 ROE" in html
+
+    def test_fundamental_details_values_shown(self, run_date, tmp_path):
+        """ROE, D/E, and promoter holding values should appear in the card."""
+        results = [self._make_result_with_fundamentals()]
+        path = generate_html_report(results, str(tmp_path), run_date, include_all=True)
+        html = Path(path).read_text(encoding="utf-8")
+        assert "24.3" in html   # ROE
+        assert "0.40" in html   # D/E
+        assert "52.1" in html   # Promoter
+
+    def test_news_indicator_positive(self, run_date, tmp_path):
+        """news_score=42 → 🟢 Positive indicator in HTML."""
+        results = [self._make_result_with_fundamentals()]
+        path = generate_html_report(results, str(tmp_path), run_date, include_all=True)
+        html = Path(path).read_text(encoding="utf-8")
+        assert "Positive" in html or "+42" in html
+
+    def test_eps_badge_accelerating(self, run_date, tmp_path):
+        """f2_eps_accelerating=True → EPS badge shows ▲ Accelerating."""
+        results = [self._make_result_with_fundamentals()]
+        path = generate_html_report(results, str(tmp_path), run_date, include_all=True)
+        html = Path(path).read_text(encoding="utf-8")
+        assert "Accelerating" in html
+
+    def test_empty_fundamental_details_shows_na(self, run_date, tmp_path):
+        """P7: empty fundamental_details → 'Fundamentals: N/A' shown, no crash."""
+        results = [self._make_result_no_fundamentals()]
+        path = generate_html_report(results, str(tmp_path), run_date, include_all=True)
+        assert Path(path).exists()
+        html = Path(path).read_text(encoding="utf-8")
+        assert "N/A" in html or "fund-na" in html
+
+    def test_empty_fundamental_details_no_fund_card(self, run_date, tmp_path):
+        """No fund-card should be rendered when fundamental_details is empty."""
+        results = [self._make_result_no_fundamentals()]
+        path = generate_html_report(results, str(tmp_path), run_date, include_all=True)
+        html = Path(path).read_text(encoding="utf-8")
+        assert "F1 EPS" not in html
+        assert "F4 ROE" not in html

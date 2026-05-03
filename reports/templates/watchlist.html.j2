@@ -20,9 +20,7 @@
       display: flex; flex-wrap: wrap; align-items: baseline;
       gap: 12px; margin-bottom: 20px;
     }
-    .page-header h1 {
-      font-size: 1.5rem; font-weight: 700; color: #f0f6fc;
-    }
+    .page-header h1 { font-size: 1.5rem; font-weight: 700; color: #f0f6fc; }
     .run-date { color: #8b949e; font-size: 0.9rem; }
 
     /* ── Summary bar ── */
@@ -37,10 +35,7 @@
       padding: 3px 10px; font-size: 0.8rem; color: #8b949e;
     }
     .stat-chip strong { color: #f0f6fc; }
-  </style>
-</head>
 
-  <style>
     /* ── Quality badges ── */
     .badge {
       display: inline-block; border-radius: 4px;
@@ -57,13 +52,8 @@
 
     /* ── Main table ── */
     .table-wrap { overflow-x: auto; }
-    table {
-      width: 100%; border-collapse: collapse;
-      min-width: 760px;
-    }
-    thead tr {
-      background: #161b22; border-bottom: 2px solid #30363d;
-    }
+    table { width: 100%; border-collapse: collapse; min-width: 760px; }
+    thead tr { background: #161b22; border-bottom: 2px solid #30363d; }
     thead th {
       padding: 10px 12px; text-align: left;
       font-size: 0.75rem; text-transform: uppercase;
@@ -71,14 +61,56 @@
     }
     tbody tr { border-bottom: 1px solid #21262d; }
     tbody tr:hover { background: #161b22; }
-    tbody td {
-      padding: 9px 12px; vertical-align: middle;
-    }
+    tbody td { padding: 9px 12px; vertical-align: middle; }
     .sym { font-weight: 600; color: #f0f6fc; }
     .num { font-variant-numeric: tabular-nums; }
     .score-high { color: #3fb950; }
     .score-mid  { color: #e3a614; }
     .score-low  { color: #f85149; }
+
+    /* ── Fundamental conditions card ── */
+    .fund-card {
+      background: #161b22; border: 1px solid #30363d;
+      border-radius: 6px; padding: 10px 14px;
+      margin: 4px 0 6px; font-size: 0.8rem;
+    }
+    .fund-card-title {
+      font-size: 0.72rem; text-transform: uppercase;
+      letter-spacing: 0.05em; color: #8b949e; margin-bottom: 7px;
+    }
+    .fund-grid {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+      gap: 4px 10px;
+    }
+    .fund-cond {
+      display: flex; align-items: center; gap: 5px;
+    }
+    .fund-cond .dot {
+      width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+    }
+    .dot-pass { background: #3fb950; }
+    .dot-fail { background: #f85149; }
+    .fund-na {
+      color: #484f58; font-style: italic;
+    }
+
+    /* ── EPS badge ── */
+    .eps-badge {
+      display: inline-block; font-size: 0.75rem; font-weight: 600;
+      padding: 2px 7px; border-radius: 4px;
+      background: #0d2e1a; color: #3fb950; border: 1px solid #3fb950;
+    }
+    .eps-badge.flat {
+      background: #1c1c24; color: #8b949e; border-color: #484f58;
+    }
+
+    /* ── News score ── */
+    .news-indicator { font-size: 0.82rem; }
+
+    /* ── FII trend ── */
+    .fii-label { font-size: 0.75rem; color: #8b949e; }
+    .fii-rising  { color: #3fb950; }
+    .fii-falling { color: #f85149; }
 
     /* ── LLM brief row ── */
     .brief-row td {
@@ -86,23 +118,15 @@
       font-size: 0.82rem; color: #8b949e;
       background: #0d1117; border-bottom: 1px solid #21262d;
     }
-    .brief-label {
-      font-weight: 600; color: #58a6ff; margin-right: 6px;
-    }
+    .brief-label { font-weight: 600; color: #58a6ff; margin-right: 6px; }
 
     /* ── Empty state ── */
-    .empty-state {
-      text-align: center; padding: 48px 16px;
-      color: #8b949e; font-size: 1rem;
-    }
+    .empty-state { text-align: center; padding: 48px 16px; color: #8b949e; font-size: 1rem; }
 
     /* ── Footer ── */
-    footer {
-      margin-top: 32px; text-align: center;
-      font-size: 0.78rem; color: #484f58;
-    }
+    footer { margin-top: 32px; text-align: center; font-size: 0.78rem; color: #484f58; }
   </style>
-
+</head>
 <body>
 
   <!-- ══ Page header ══ -->
@@ -127,24 +151,16 @@
     <table>
       <thead>
         <tr>
-          <th>#</th>
-          <th>Symbol</th>
-          <th>Score</th>
-          <th>Quality</th>
-          <th>Stage</th>
-          <th>TT</th>
-          <th>VCP</th>
-          <th>Entry</th>
-          <th>Stop</th>
-          <th>Risk&nbsp;%</th>
-          <th>RS</th>
+          <th>#</th><th>Symbol</th><th>Score</th><th>Quality</th>
+          <th>Stage</th><th>TT</th><th>VCP</th>
+          <th>Entry</th><th>Stop</th><th>Risk&nbsp;%</th><th>RS</th>
+          <th>EPS</th><th>News</th>
         </tr>
       </thead>
       <tbody>
-
         {%- if no_candidates %}
         <tr>
-          <td colspan="11" class="empty-state">No candidates meet the screening criteria for {{ run_date }}.</td>
+          <td colspan="13" class="empty-state">No candidates meet the screening criteria for {{ run_date }}.</td>
         </tr>
         {%- else %}
         {%- for row in rows %}
@@ -167,16 +183,62 @@
           <td class="num">{{ row.stage }}</td>
           <td class="num">{{ row.conditions_met }}</td>
           <td>{{ "✓" if row.vcp_qualified else "–" }}</td>
-          <td class="num">{{ "$%.2f"|format(row.entry_price) if row.entry_price else "–" }}</td>
-          <td class="num">{{ "$%.2f"|format(row.stop_loss) if row.stop_loss else "–" }}</td>
+          <td class="num">{{ "₹%.2f"|format(row.entry_price) if row.entry_price else "–" }}</td>
+          <td class="num">{{ "₹%.2f"|format(row.stop_loss) if row.stop_loss else "–" }}</td>
           <td class="num">{{ "%.1f%%"|format(row.risk_pct) if row.risk_pct else "–" }}</td>
           <td class="num">{{ row.rs_rating if row.rs_rating else "–" }}</td>
+          <td>
+            {%- if row.eps_badge %}
+            <span class="eps-badge{% if '—' in row.eps_badge %} flat{% endif %}">{{ row.eps_badge }}</span>
+            {%- else %}–{%- endif %}
+          </td>
+          <td class="news-indicator">{{ row.news_indicator if row.news_indicator else "–" }}</td>
         </tr>
+
+        {%- if row.has_fundamentals %}
+        <tr>
+          <td colspan="13" style="padding:0 12px 10px 32px; background:#0d1117; border-bottom:1px solid #21262d;">
+            <div class="fund-card">
+              <div class="fund-card-title">Fundamental Conditions (7F)</div>
+              {%- set fd = row.fundamental_details %}
+              <div class="fund-grid">
+                <div class="fund-cond"><span class="dot {{ 'dot-pass' if fd.f1_eps_positive else 'dot-fail' }}"></span><span>F1 EPS &gt; 0</span></div>
+                <div class="fund-cond"><span class="dot {{ 'dot-pass' if fd.f2_eps_accelerating else 'dot-fail' }}"></span><span>F2 EPS Accel</span></div>
+                <div class="fund-cond"><span class="dot {{ 'dot-pass' if fd.f3_sales_growth else 'dot-fail' }}"></span><span>F3 Sales Growth</span></div>
+                <div class="fund-cond"><span class="dot {{ 'dot-pass' if fd.f4_roe else 'dot-fail' }}"></span><span>F4 ROE ≥ 15%</span></div>
+                <div class="fund-cond"><span class="dot {{ 'dot-pass' if fd.f5_de_ratio else 'dot-fail' }}"></span><span>F5 D/E ≤ 1.0</span></div>
+                <div class="fund-cond"><span class="dot {{ 'dot-pass' if fd.f6_promoter_holding else 'dot-fail' }}"></span><span>F6 Promoter ≥ 35%</span></div>
+                <div class="fund-cond"><span class="dot {{ 'dot-pass' if fd.f7_profit_growth else 'dot-fail' }}"></span><span>F7 Profit Growth</span></div>
+              </div>
+              {%- if fd['values'] %}
+              <div style="margin-top:7px; font-size:0.75rem; color:#8b949e; display:flex; flex-wrap:wrap; gap:8px;">
+                {%- if fd['values']['roe'] is defined %}<span>ROE: <strong style="color:#c9d1d9">{{ "%.1f"|format(fd['values']['roe']) }}%</strong></span>{%- endif %}
+                {%- if fd['values']['de_ratio'] is defined %}<span>D/E: <strong style="color:#c9d1d9">{{ "%.2f"|format(fd['values']['de_ratio']) }}</strong></span>{%- endif %}
+                {%- if fd['values']['promoter_holding'] is defined %}<span>Promoter: <strong style="color:#c9d1d9">{{ "%.1f"|format(fd['values']['promoter_holding']) }}%</strong></span>{%- endif %}
+              </div>
+              {%- endif %}
+              {%- if row.fii_trend %}
+              <div style="margin-top:5px; font-size:0.75rem;">
+                FII Trend:
+                <span class="fii-label {% if row.fii_trend == 'Rising' %}fii-rising{% elif row.fii_trend == 'Falling' %}fii-falling{% endif %}">
+                  {{ row.fii_trend }}
+                </span>
+              </div>
+              {%- endif %}
+            </div>
+          </td>
+        </tr>
+        {%- elif not row.fundamental_pass and not row.has_fundamentals %}
+        <tr>
+          <td colspan="13" style="padding:0 12px 6px 32px; background:#0d1117; border-bottom:1px solid #21262d;">
+            <span class="fund-na">Fundamentals: N/A</span>
+          </td>
+        </tr>
+        {%- endif %}
+
         {%- if has_briefs and row.brief %}
         <tr class="brief-row">
-          <td colspan="11">
-            <span class="brief-label">AI Brief:</span>{{ row.brief }}
-          </td>
+          <td colspan="13"><span class="brief-label">AI Brief:</span>{{ row.brief }}</td>
         </tr>
         {%- endif %}
         {%- endfor %}

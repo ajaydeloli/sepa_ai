@@ -282,31 +282,34 @@ def test_bootstrap_vs_update_routing(
 # ---------------------------------------------------------------------------
 
 def test_individual_symbol_ohlcv_failure_continues(
-    tmp_path: Path, capfd: pytest.CaptureFixture
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     """
     When append_row() raises for one symbol the runner logs a WARNING and
     continues processing the remaining symbols — it must not abort the run.
     """
+    import logging
+
     ctx = _make_ctx(tmp_path)
     from dataclasses import replace
     ctx = replace(ctx, dry_run=False)
 
-    with _StandardPatches() as p:
-        # First symbol (RELIANCE) raises; second (TCS) succeeds
-        p.mock_append_row.side_effect = [RuntimeError("disk full"), None]
-        result = run_daily(ctx)
-
-    captured = capfd.readouterr()
+    with caplog.at_level(logging.WARNING, logger="pipeline.runner"):
+        with _StandardPatches() as p:
+            # First symbol (RELIANCE) raises; second (TCS) succeeds
+            p.mock_append_row.side_effect = [RuntimeError("disk full"), None]
+            result = run_daily(ctx)
 
     # Run must complete and return a summary — not raise
     assert isinstance(result, dict)
     assert result["run_date"] == str(_RUN_DATE)
 
     # A warning must have been logged for the failing symbol
-    assert "RELIANCE" in captured.out or "append_row" in captured.out, (
-        f"Expected a warning mentioning RELIANCE, got stdout: {captured.out!r}"
-    )
+    assert any(
+        "RELIANCE" in r.message or "append_row" in r.message
+        for r in caplog.records
+        if r.levelno == logging.WARNING
+    ), f"Expected a WARNING mentioning RELIANCE. Records: {[r.message for r in caplog.records]}"
 
     # The screener still ran (with whatever symbols were available)
     p.mock_run_screen.assert_called_once()
@@ -317,29 +320,30 @@ def test_individual_symbol_ohlcv_failure_continues(
 # ---------------------------------------------------------------------------
 
 def test_non_critical_failures_do_not_abort(
-    tmp_path: Path, capfd: pytest.CaptureFixture
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     """
     Failures in steps 8–13 (CSV report, HTML report, charts, alert filter,
     Telegram send, record_alert) must NOT abort run_daily().  The summary
     dict must be returned and the screener must have been called.
     """
+    import logging
+
     ctx = _make_ctx(tmp_path)
     from dataclasses import replace
     ctx = replace(ctx, dry_run=False)
 
-    with _StandardPatches() as p:
-        # Blow up every non-critical step
-        p.mock_csv.side_effect = OSError("disk full")
-        p.mock_html.side_effect = OSError("disk full")
-        p.mock_charts.side_effect = RuntimeError("matplotlib crash")
-        p.mock_should_alert.side_effect = RuntimeError("DB gone")
-        p.mock_send_wl.side_effect = ConnectionError("no internet")
-        p.mock_record_alert.side_effect = RuntimeError("sqlite locked")
+    with caplog.at_level(logging.ERROR, logger="pipeline.runner"):
+        with _StandardPatches() as p:
+            # Blow up every non-critical step
+            p.mock_csv.side_effect = OSError("disk full")
+            p.mock_html.side_effect = OSError("disk full")
+            p.mock_charts.side_effect = RuntimeError("matplotlib crash")
+            p.mock_should_alert.side_effect = RuntimeError("DB gone")
+            p.mock_send_wl.side_effect = ConnectionError("no internet")
+            p.mock_record_alert.side_effect = RuntimeError("sqlite locked")
 
-        result = run_daily(ctx)
-
-    captured = capfd.readouterr()
+            result = run_daily(ctx)
 
     # Run must complete — never raise
     assert isinstance(result, dict)
@@ -349,11 +353,11 @@ def test_non_critical_failures_do_not_abort(
     p.mock_run_screen.assert_called_once()
     p.mock_persist.assert_called_once()
 
-    # Each non-critical failure must have produced an ERROR log
-    out = captured.out
-    assert "Step 8" in out or "CSV" in out
-    assert "Step 9" in out or "HTML" in out
-    assert "Step 10" in out or "chart" in out.lower()
+    # Each non-critical failure must have produced an ERROR log record
+    error_messages = " ".join(r.message for r in caplog.records if r.levelno == logging.ERROR)
+    assert "Step 8" in error_messages or "CSV" in error_messages
+    assert "Step 9" in error_messages or "HTML" in error_messages
+    assert "Step 10" in error_messages or "chart" in error_messages.lower()
 
 
 # ---------------------------------------------------------------------------

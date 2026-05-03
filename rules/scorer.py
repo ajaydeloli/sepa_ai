@@ -27,6 +27,7 @@ import pandas as pd
 
 from features.sector_rs import get_sector_score_bonus
 from features.vcp import VCPMetrics
+from rules.fundamental_template import FundamentalResult, check_fundamental_template
 from rules.stage import StageResult
 from rules.trend_template import TrendTemplateResult
 from utils.logger import get_logger
@@ -277,11 +278,15 @@ def score_symbol(
     vcp_score: float        = _compute_vcp_score(vcp_metrics)
     volume_score: float     = _compute_volume_score(row, breakout_triggered)
 
-    # Fundamental: neutral 50 until Phase 5 wires this in
-    if fundamental_result is not None and "score" in fundamental_result:
-        fundamental_score: float = float(fundamental_result["score"])
+    # Phase 5: call check_fundamental_template when fundamentals enabled + provided
+    _fund_result: FundamentalResult | None = None
+    if config.get("fundamentals", {}).get("enabled", True) and fundamental_result is not None:
+        _fund_result = check_fundamental_template(fundamental_result, config)
+
+    if _fund_result is not None:
+        fundamental_score: float = float(_fund_result.score)
     else:
-        fundamental_score = 50.0
+        fundamental_score = 50.0  # neutral when absent or disabled
 
     # News: raw range −100 to +100 → normalise to 0–100; neutral 50 if absent
     if news_score is not None:
@@ -322,6 +327,14 @@ def score_symbol(
         vcp_qualified,
     )
 
+    # Phase 5: hard gate — fundamentals must pass when hard_gate=True
+    if (
+        config.get("fundamentals", {}).get("hard_gate", False)
+        and _fund_result is not None
+        and not _fund_result.passes
+    ):
+        setup_quality = "FAIL"
+
     log.debug(
         "score_symbol: %s stage=%d score=%d quality=%s "
         "rs=%.1f trend=%.1f vcp=%.1f vol=%.1f fund=%.1f news=%.1f bonus=%d",
@@ -333,10 +346,9 @@ def score_symbol(
     # ------------------------------------------------------------------
     # Assemble and return
     # ------------------------------------------------------------------
-    fundamental_pass = (
-        bool(fundamental_result.get("pass", False)) if fundamental_result else False
-    )
-    fundamental_details = dict(fundamental_result) if fundamental_result else {}
+    # Phase 5: derive fundamental_pass / fundamental_details from FundamentalResult
+    fundamental_pass = _fund_result.passes if _fund_result is not None else False
+    fundamental_details = dict(vars(_fund_result)) if _fund_result is not None else {}
 
     return SEPAResult(
         symbol=symbol,

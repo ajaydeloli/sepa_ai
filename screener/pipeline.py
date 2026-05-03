@@ -50,11 +50,14 @@ _MAX_FEATURE_ROWS: int = 300
 # ---------------------------------------------------------------------------
 # Worker args container  (plain tuple so it's picklable)
 # ---------------------------------------------------------------------------
-# args layout:
-#   (symbol, run_date, config, rs_ratings, sector_ranks, symbol_info_records)
+# args layout (updated for Phase 5):
+#   (symbol, run_date, config, rs_ratings, sector_ranks,
+#    symbol_info_records, fundamental_result, news_score)
 #
 # symbol_info_records is a list[dict] (JSON-serialisable) so it survives
 # pickle across process boundaries without pandas version mismatches.
+# fundamental_result is a plain dict (or None) — picklable.
+# news_score is a float (or None) — picklable.
 
 
 def _screen_one(args: tuple) -> SEPAResult:
@@ -71,8 +74,11 @@ def _screen_one(args: tuple) -> SEPAResult:
     rs_ratings      : dict[str, int]   — pre-computed for full universe
     sector_ranks    : dict[str, int]   — pre-computed sector rankings
     symbol_info_rec : list[dict]       — records of symbol_info DataFrame
+    fundamental_result : dict | None  — Phase 5 raw fundamentals dict
+    news_score         : float | None — Phase 5 pre-computed news score
     """
-    (symbol, run_date, config, rs_ratings, sector_ranks, symbol_info_records) = args
+    (symbol, run_date, config, rs_ratings, sector_ranks,
+     symbol_info_records, fundamental_result, news_score) = args
 
     # Reconstruct symbol_info DataFrame inside the worker
     symbol_info = pd.DataFrame(symbol_info_records)
@@ -107,6 +113,7 @@ def _screen_one(args: tuple) -> SEPAResult:
             symbol=symbol, run_date=run_date, row=row_empty,
             stage_result=stage_fail, tt_result=tt_fail, vcp_metrics=vcp_fail,
             sector_ranks=sector_ranks, symbol_info=symbol_info, config=config,
+            fundamental_result=fundamental_result, news_score=news_score,
         )
 
     try:
@@ -143,6 +150,7 @@ def _screen_one(args: tuple) -> SEPAResult:
                 stage_result=stage_result, tt_result=tt_fail,
                 vcp_metrics=vcp_fail, sector_ranks=sector_ranks,
                 symbol_info=symbol_info, config=config,
+                fundamental_result=fundamental_result, news_score=news_score,
             )
 
         # ── Trend template ─────────────────────────────────────────────
@@ -157,6 +165,7 @@ def _screen_one(args: tuple) -> SEPAResult:
             stage_result=stage_result, tt_result=tt_result,
             vcp_metrics=vcp_metrics, sector_ranks=sector_ranks,
             symbol_info=symbol_info, config=config,
+            fundamental_result=fundamental_result, news_score=news_score,
         )
 
     except Exception as exc:  # noqa: BLE001
@@ -176,6 +185,8 @@ def run_screen(
     symbol_info: pd.DataFrame,
     benchmark_df: pd.DataFrame,
     n_workers: int = 4,
+    fundamentals_map: dict[str, dict] | None = None,
+    news_scores: dict[str, float] | None = None,
 ) -> list[SEPAResult]:
     """Full SEPA screening pipeline.
 
@@ -199,10 +210,17 @@ def run_screen(
         Project configuration dict (parsed from settings.yaml).
     symbol_info:
         DataFrame with columns ``symbol`` and ``sector``.
-    benchmark_df:
+    benchDF:
         Benchmark OHLCV DataFrame (e.g. Nifty 500) for RS computation.
     n_workers:
         Number of parallel ProcessPoolExecutor workers.
+    fundamentals_map:
+        Optional dict {symbol → raw fundamentals dict} pre-fetched by runner.
+        Passed through to each worker so score_symbol can call
+        check_fundamental_template().
+    news_scores:
+        Optional dict {symbol → pre-computed news score (-100..+100)}.
+        Passed through to each worker so score_symbol can use it.
 
     Returns
     -------
@@ -249,8 +267,39 @@ def run_screen(
     # DataFrame without pickle issues across Python versions.
     symbol_info_records: list[dict] = symbol_info.to_dict(orient="records")
 
+    # ── Fetch fundamentals and news for passed symbols (when not pre-supplied) ──
+    if fundamentals_map is None and config.get("fundamentals", {}).get("enabled", True):
+        try:
+            from ingestion.fundamentals import fetch_fundamentals
+            _fund_map: dict[str, dict] = {}
+            for sym in passed_symbols:
+                try:
+                    _fund_map[sym] = fetch_fundamentals(sym)
+                except Exception as _fe:
+                    log.warning("run_screen: fundamentals fetch failed for %s: %s", sym, _fe)
+            fundamentals_map = _fund_map
+        except ImportError:
+            log.warning("run_screen: ingestion.fundamentals not available — skipping")
+
+    if news_scores is None and config.get("news", {}).get("enabled", True):
+        try:
+            from ingestion.news import compute_news_score, fetch_market_news, fetch_symbol_news
+            _all_news = fetch_market_news()          # single HTTP call — cached 30 min
+            _ns_map: dict[str, float] = {}
+            for sym in passed_symbols:
+                try:
+                    articles = fetch_symbol_news(sym, _all_news, use_llm=True)
+                    _ns_map[sym] = compute_news_score(articles)
+                except Exception as _ne:
+                    log.warning("run_screen: news score failed for %s: %s", sym, _ne)
+            news_scores = _ns_map
+        except ImportError:
+            log.warning("run_screen: ingestion.news not available — skipping")
+
     worker_args = [
-        (sym, run_date, config, rs_ratings, sector_ranks, symbol_info_records)
+        (sym, run_date, config, rs_ratings, sector_ranks, symbol_info_records,
+         (fundamentals_map or {}).get(sym),
+         (news_scores or {}).get(sym))
         for sym in passed_symbols
     ]
 

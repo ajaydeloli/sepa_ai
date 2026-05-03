@@ -46,6 +46,11 @@ fundamentals:
   enabled: true
   hard_gate: false
   cache_days: 7
+  conditions:
+    min_roe: 15.0
+    max_de: 1.0
+    min_promoter_holding: 35.0
+    min_sales_growth_yoy: 10.0
 
 news:
   enabled: true

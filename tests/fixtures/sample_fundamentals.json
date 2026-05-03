@@ -1,0 +1,20 @@
+{
+  "symbol": "TESTCO",
+  "fetched_at": "2024-01-10T06:30:00+00:00",
+  "pe_ratio": 28.5,
+  "pb_ratio": 4.2,
+  "roe": 22.3,
+  "roce": 26.1,
+  "debt_to_equity": 0.35,
+  "eps": 42.6,
+  "promoter_holding": 52.4,
+  "fii_holding_pct": 18.7,
+  "fii_trend": "rising",
+  "eps_values": [8.5, 9.2, 10.8, 12.1],
+  "eps_growth_rates": [8.24, 17.39, 12.04],
+  "eps_accelerating": false,
+  "sales_growth_yoy": 18.61,
+  "profit_growth": 22.24,
+  "latest_revenue": 5420.3,
+  "latest_profit": 612.8
+}

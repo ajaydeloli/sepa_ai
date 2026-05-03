@@ -336,6 +336,52 @@ def run_daily(ctx: RunContext) -> dict:
             len(benchmark_df), len(symbol_info),
         )
 
+        # ── Step 5b: Pre-fetch fundamentals and news (per pre-filter candidates) ──
+        # These are passed to run_screen so screener workers can access them without
+        # making redundant HTTP calls inside subprocesses.
+        fundamentals_map: dict[str, dict] | None = None
+        news_scores_map: dict[str, float] | None = None
+
+        if config.get("fundamentals", {}).get("enabled", True):
+            try:
+                from ingestion.fundamentals import fetch_fundamentals
+                from screener.pre_filter import build_features_index, pre_filter as _pf
+                _fi = build_features_index(universe, config)
+                _candidates = _pf(_fi, config)
+                _fmap: dict[str, dict] = {}
+                for sym in _candidates:
+                    try:
+                        _fmap[sym] = fetch_fundamentals(sym)
+                    except Exception as _fe:
+                        log.warning("Step 5b: fundamentals failed for %s: %s", sym, _fe)
+                fundamentals_map = _fmap
+                log.info("Step 5b: fetched fundamentals for %d candidates", len(_fmap))
+            except Exception as _exc:
+                log.warning("Step 5b: fundamentals fetch skipped: %s", _exc)
+
+        if config.get("news", {}).get("enabled", True):
+            try:
+                from ingestion.news import (
+                    compute_news_score,
+                    fetch_market_news,
+                    fetch_symbol_news,
+                )
+                from screener.pre_filter import build_features_index, pre_filter as _pf2
+                _fi2 = build_features_index(universe, config)
+                _cands2 = _pf2(_fi2, config)
+                _all_news = fetch_market_news()       # single HTTP call — cached
+                _nsmap: dict[str, float] = {}
+                for sym in _cands2:
+                    try:
+                        arts = fetch_symbol_news(sym, _all_news, use_llm=True)
+                        _nsmap[sym] = compute_news_score(arts)
+                    except Exception as _ne:
+                        log.warning("Step 5b: news failed for %s: %s", sym, _ne)
+                news_scores_map = _nsmap
+                log.info("Step 5b: computed news scores for %d candidates", len(_nsmap))
+            except Exception as _exc:
+                log.warning("Step 5b: news fetch skipped: %s", _exc)
+
         # ── Step 6: Run the SEPA screener ───────────────────────────────────
         log.info("Step 6 — run_screen  universe=%d", len(universe))
         results = run_screen(
@@ -344,6 +390,8 @@ def run_daily(ctx: RunContext) -> dict:
             config=config,
             symbol_info=symbol_info,
             benchmark_df=benchmark_df,
+            fundamentals_map=fundamentals_map,
+            news_scores=news_scores_map,
         )
 
         rep = get_report_summary(results)

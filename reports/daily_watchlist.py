@@ -81,6 +81,25 @@ def _risk_pct(result: SEPAResult) -> Optional[float]:
     return None
 
 
+def _news_indicator(news_score: float | None) -> str:
+    """Return an emoji+label for the news score."""
+    if news_score is None:
+        return ""
+    if news_score > 15:
+        return f"🟢 Positive (+{news_score:.0f})"
+    if news_score < -15:
+        return f"🔴 Negative ({news_score:.0f})"
+    return f"⚪ Neutral ({news_score:+.0f})"
+
+
+def _eps_badge(fundamental_details: dict) -> str:
+    """Return EPS acceleration badge text."""
+    if not fundamental_details:
+        return ""
+    accel = fundamental_details.get("f2_eps_accelerating", False)
+    return "▲ Accelerating" if accel else "— Flat"
+
+
 def _as_csv_row(rank: int, result: SEPAResult, is_watchlist: bool) -> dict:
     return {
         "rank": rank,
@@ -175,10 +194,21 @@ def generate_html_report(
     # Build template context
     rows = []
     for rank, result in enumerate(sorted_rows, start=1):
-        rows.append(
+        fd = result.fundamental_details or {}
+        row_data = (
             _as_csv_row(rank, result, result.symbol in wl_set)
             | {"brief": (llm_briefs or {}).get(result.symbol, "")}
+            | {
+                "fundamental_pass": result.fundamental_pass,
+                "fundamental_details": fd,
+                "has_fundamentals": bool(fd),
+                "eps_badge": _eps_badge(fd),
+                "news_indicator": _news_indicator(result.news_score),
+                "news_score_raw": result.news_score,
+                "fii_trend": fd.get("fii_trend", ""),
+            }
         )
+        rows.append(row_data)
 
     summary = get_report_summary(results)
     html_content = template.render(
