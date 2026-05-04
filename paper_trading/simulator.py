@@ -33,6 +33,7 @@ Anti-patterns enforced
 
 from __future__ import annotations
 
+import json
 from datetime import date, datetime, time
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -282,19 +283,60 @@ def pyramid_position(
     return pos
 
 
+def apply_trailing_stop(
+    position: Position,
+    current_price: float,  # noqa: ARG001 — reserved for future ATR-based extensions
+    config: dict,
+) -> float:
+    """Compute and return the updated trailing stop price for *position*.
+
+    Algorithm
+    ---------
+    trailing  = peak_close × (1 − trailing_stop_pct)
+    new_stop  = max(trailing, position.stop_loss)   ← VCP hard floor
+    new_stop  = max(new_stop, position.trailing_stop) ← ratchet: never decrease
+
+    Config key: config["backtest"]["trailing_stop_pct"]  (default 0.07 = 7 %)
+    """
+    trailing_stop_pct = config.get("backtest", {}).get("trailing_stop_pct", 0.07)
+    trailing = position.peak_close * (1.0 - trailing_stop_pct)
+    # Floor at the VCP base-low hard stop
+    new_stop = max(trailing, position.stop_loss)
+    # Ratchet: trailing stop may only move upward
+    new_stop = max(new_stop, position.trailing_stop)
+    return new_stop
+
+
 def check_exits(
     portfolio: Portfolio,
     current_prices: dict[str, float],
     run_date: date,
 ) -> list[ClosedTrade]:
-    """Check every open position for stop-loss or target-price hits.
+    """Evaluate every open position for exit conditions.
 
-    Returns the list of ClosedTrade objects generated in this check.
-    Positions are closed at current_prices[symbol] (no extra slippage
-    applied here; use the fill from the intraday price bar).
+    Per position, in order:
+      1. Update peak_close  = max(peak_close, current_price)
+      2. Increment days_held
+      3. Compute new trailing stop via apply_trailing_stop()
+      4. Update position.trailing_stop (ratchet — never decreases)
+      5. Check exit conditions (first match wins):
+           current_price <= trailing_stop  → "trailing_stop"
+           current_price >= target_price   → "target"
+           days_held     > max_hold_days   → "max_hold_days"
+      6. On exit: deduct brokerage from pnl and from portfolio.cash
+           brokerage = exit_price × total_qty × brokerage_pct
+           brokerage_pct = config["paper_trading"]["brokerage_pct"] / 100
+                           (YAML stores it as a percent, default 0.05 %)
+
+    Returns the list of ClosedTrade objects closed in this call.
     """
+    config_pt = portfolio.config.get("paper_trading", {})
+    brokerage_pct = config_pt.get("brokerage_pct", 0.05) / 100.0
+    max_hold_days = int(config_pt.get("max_hold_days", 20))
+
     closed: list[ClosedTrade] = []
-    # Snapshot keys so we can mutate portfolio.positions inside the loop
+
+    # Snapshot keys so we can safely mutate portfolio.positions inside the loop
     for symbol in list(portfolio.positions.keys()):
         pos = portfolio.positions.get(symbol)
         if pos is None:
@@ -303,26 +345,111 @@ def check_exits(
         if price is None:
             continue
 
-        if price <= pos.stop_loss:
-            trade = portfolio.close_position(symbol, price, "stop_loss", run_date)
-            closed.append(trade)
-            log.info(
-                "check_exits: STOP LOSS %s @ %.2f (stop=%.2f)",
-                symbol,
-                price,
-                pos.stop_loss,
-            )
+        # 1 — Update highest close since entry
+        pos.peak_close = max(pos.peak_close, price)
+        # 2 — Accumulate days held
+        pos.days_held += 1
+        # 3 & 4 — Compute and ratchet the trailing stop
+        pos.trailing_stop = apply_trailing_stop(pos, price, portfolio.config)
+
+        # 5 — Determine exit reason (first match wins)
+        exit_reason: str | None = None
+        if price <= pos.trailing_stop:
+            exit_reason = "trailing_stop"
         elif pos.target_price is not None and price >= pos.target_price:
-            trade = portfolio.close_position(symbol, price, "target", run_date)
-            closed.append(trade)
-            log.info(
-                "check_exits: TARGET HIT %s @ %.2f (target=%.2f)",
-                symbol,
-                price,
-                pos.target_price,
-            )
+            exit_reason = "target"
+        elif pos.days_held > max_hold_days:
+            exit_reason = "max_hold_days"
+
+        if exit_reason is None:
+            continue
+
+        # 6 — Close the position and apply brokerage charge
+        trade = portfolio.close_position(symbol, price, exit_reason, run_date)
+        total_qty = trade.quantity   # already includes pyramid_qty
+        brokerage_cost = price * total_qty * brokerage_pct
+        trade.pnl -= brokerage_cost
+        portfolio.cash -= brokerage_cost
+
+        closed.append(trade)
+        log.info(
+            "check_exits: %s  reason=%s  price=%.2f  trail=%.2f  "
+            "pnl=%.2f  brok=%.2f  days=%d",
+            symbol, exit_reason, price, pos.trailing_stop,
+            trade.pnl, brokerage_cost, trade.quantity,
+        )
 
     return closed
+
+
+def save_state(portfolio: Portfolio) -> None:
+    """Atomically persist portfolio and trade history to JSON files.
+
+    Writes:
+      data/paper_trading/portfolio.json  — full state via portfolio.to_json()
+      data/paper_trading/trades.json     — flat list of closed trade dicts
+
+    Each file is written to a ``.tmp`` sibling first, then renamed so a
+    crash mid-write never leaves a corrupt file.
+    """
+    _PT_DIR.mkdir(parents=True, exist_ok=True)
+
+    # --- portfolio.json ---
+    portfolio_tmp = _PORTFOLIO_FILE.with_suffix(".json.tmp")
+    portfolio_tmp.write_text(
+        json.dumps(portfolio.to_json(), indent=2, default=str),
+        encoding="utf-8",
+    )
+    portfolio_tmp.replace(_PORTFOLIO_FILE)
+
+    # --- trades.json (flat closed-trade archive) ---
+    trades_data: list[dict] = []
+    for t in portfolio.closed_trades:
+        row = t.__dict__.copy()
+        row["entry_date"] = str(row["entry_date"])
+        row["exit_date"] = str(row["exit_date"])
+        trades_data.append(row)
+
+    trades_tmp = _TRADES_FILE.with_suffix(".json.tmp")
+    trades_tmp.write_text(
+        json.dumps(trades_data, indent=2, default=str),
+        encoding="utf-8",
+    )
+    trades_tmp.replace(_TRADES_FILE)
+
+    log.debug(
+        "save_state: portfolio saved  cash=%.2f  open=%d  closed=%d",
+        portfolio.cash, len(portfolio.positions), len(portfolio.closed_trades),
+    )
+
+
+def load_state(config: dict) -> Portfolio:
+    """Load portfolio from data/paper_trading/portfolio.json.
+
+    Returns a fresh Portfolio seeded with config["paper_trading"]["initial_capital"]
+    if the file is missing or cannot be parsed.
+    """
+    initial_capital = config.get("paper_trading", {}).get("initial_capital", 100_000.0)
+
+    if not _PORTFOLIO_FILE.exists():
+        log.info("load_state: %s not found — returning fresh portfolio", _PORTFOLIO_FILE)
+        return Portfolio(initial_capital=initial_capital, config=config)
+
+    try:
+        data = json.loads(_PORTFOLIO_FILE.read_text(encoding="utf-8"))
+        portfolio = Portfolio.from_json(data, config)
+        log.info(
+            "load_state: loaded from %s  cash=%.2f  open=%d  closed=%d",
+            _PORTFOLIO_FILE, portfolio.cash,
+            len(portfolio.positions), len(portfolio.closed_trades),
+        )
+        return portfolio
+    except Exception as exc:
+        log.error(
+            "load_state: failed to read %s (%s) — returning fresh portfolio",
+            _PORTFOLIO_FILE, exc,
+        )
+        return Portfolio(initial_capital=initial_capital, config=config)
 
 
 def reset_portfolio(confirm: bool = False) -> None:

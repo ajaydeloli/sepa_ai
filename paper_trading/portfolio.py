@@ -38,8 +38,11 @@ class Position:
     target_price: float | None
     sepa_score: int
     setup_quality: str
-    pyramided: bool = False   # True once a pyramid add has been made
-    pyramid_qty: int = 0      # Extra shares added via pyramid
+    pyramided: bool = False    # True once a pyramid add has been made
+    pyramid_qty: int = 0       # Extra shares added via pyramid
+    peak_close: float = 0.0    # Highest close since entry (trailing stop anchor)
+    trailing_stop: float = 0.0 # Current trailing stop (updated each check_exits call)
+    days_held: int = 0         # Trading days held since entry
 
 
 @dataclass
@@ -52,266 +55,325 @@ class ClosedTrade:
     quantity: int
     pnl: float
     pnl_pct: float
-    exit_reason: str    # "stop_loss" | "target" | "manual" | "end_of_backtest"
-    r_multiple: float   # (exit_price - entry_price) / (entry_price - stop_loss)
+    exit_reason: str   # "trailing_stop" | "target" | "max_hold_days" | "manual" | "end_of_backtest"
+    r_multiple: float  # (exit_price - entry_price) / (entry_price - stop_loss)
 
 
 # ---------------------------------------------------------------------------
-# Portfolio
+# Portfolio — live state container
 # ---------------------------------------------------------------------------
 
 
+@dataclass
 class Portfolio:
-    def __init__(self, initial_capital: float, config: dict) -> None:
-        self.cash: float = initial_capital
-        self.initial_capital: float = initial_capital
-        self.positions: dict[str, Position] = {}
-        self.closed_trades: list[ClosedTrade] = []
-        self.config = config
+    """In-memory container for cash, open positions, and closed trade history."""
+
+    initial_capital: float
+    config: dict = field(repr=False)
+    cash: float = field(init=False)
+    positions: dict[str, Position] = field(default_factory=dict, init=False)
+    closed_trades: list[ClosedTrade] = field(default_factory=list, init=False)
+
+    def __post_init__(self) -> None:
+        self.cash = self.initial_capital
+        self.equity_curve: list[dict] = []
+        # Each entry: {"date": str(date), "total_value": float, "cash": float}
 
     # ------------------------------------------------------------------
     # Mutations
     # ------------------------------------------------------------------
 
     def add_position(self, position: Position) -> None:
-        """Open a new position, deducting its cost from cash.
+        """Add *position* to the portfolio, deducting cost from cash.
 
-        Quantity is silently reduced if cost exceeds available cash so
-        cash never goes negative.  A warning is logged when capping occurs.
+        If the full cost exceeds available cash the quantity is capped to
+        what cash can cover.  A warning is logged and the capped position
+        is still added.  If even qty=1 is unaffordable the position is
+        silently skipped.
         """
         cost = position.entry_price * position.quantity
         if cost > self.cash:
+            max_qty = max(1, int(self.cash / position.entry_price))
             log.warning(
-                "add_position: %s cost %.2f exceeds cash %.2f — capping quantity",
-                position.symbol,
-                cost,
-                self.cash,
+                "add_position: %s qty capped %d→%d (cash=%.2f < cost=%.2f)",
+                position.symbol, position.quantity, max_qty, self.cash, cost,
             )
-            position.quantity = max(1, int(self.cash / position.entry_price))
-            cost = position.entry_price * position.quantity
-
+            position.quantity = max_qty
+            cost = position.entry_price * max_qty
+        if cost > self.cash:
+            log.warning(
+                "add_position: %s cannot afford qty=1 @ %.2f — skipping",
+                position.symbol, position.entry_price,
+            )
+            return
         self.cash -= cost
         self.positions[position.symbol] = position
-        log.info(
-            "add_position: %s qty=%d @ %.2f  cash_remaining=%.2f",
-            position.symbol,
-            position.quantity,
-            position.entry_price,
-            self.cash,
+        log.debug(
+            "add_position: %s qty=%d entry=%.2f cash_left=%.2f",
+            position.symbol, position.quantity, position.entry_price, self.cash,
         )
 
     def close_position(
         self,
         symbol: str,
         exit_price: float,
-        reason: str,
+        exit_reason: str,
         exit_date: date,
     ) -> ClosedTrade:
-        """Close an open position, return proceeds to cash, record the trade.
+        """Remove *symbol* from open positions, credit cash, return ClosedTrade.
 
-        Parameters
-        ----------
-        symbol:      Ticker of the position to close.
-        exit_price:  Fill price (caller applies any slippage before passing).
-        reason:      One of "stop_loss", "target", "manual", "end_of_backtest".
-        exit_date:   Trading date of the exit.
+        total_qty = original quantity + any pyramid add shares.
+        pnl reflects the gross gain/loss before any brokerage deduction
+        (caller is responsible for subtracting brokerage when needed).
         """
-        position = self.positions.pop(symbol)
-        total_qty = position.quantity + position.pyramid_qty
-        proceeds = exit_price * total_qty
-        cost_basis = position.entry_price * total_qty
-
-        pnl = proceeds - cost_basis
-        pnl_pct = (pnl / cost_basis * 100.0) if cost_basis else 0.0
-
-        risk = position.entry_price - position.stop_loss
-        r_multiple = (
-            (exit_price - position.entry_price) / risk if risk > 0 else 0.0
-        )
-
-        self.cash += proceeds
-
+        pos = self.positions.pop(symbol)
+        total_qty = pos.quantity + pos.pyramid_qty
+        gross_proceeds = exit_price * total_qty
+        pnl = gross_proceeds - pos.entry_price * total_qty
+        pnl_pct = (exit_price / pos.entry_price - 1.0) * 100.0
+        risk = pos.entry_price - pos.stop_loss
+        r_multiple = (exit_price - pos.entry_price) / risk if risk > 0 else 0.0
+        self.cash += gross_proceeds
         trade = ClosedTrade(
             symbol=symbol,
-            entry_date=position.entry_date,
+            entry_date=pos.entry_date,
             exit_date=exit_date,
-            entry_price=position.entry_price,
+            entry_price=pos.entry_price,
             exit_price=exit_price,
             quantity=total_qty,
-            pnl=round(pnl, 2),
-            pnl_pct=round(pnl_pct, 4),
-            exit_reason=reason,
-            r_multiple=round(r_multiple, 4),
+            pnl=pnl,
+            pnl_pct=pnl_pct,
+            exit_reason=exit_reason,
+            r_multiple=r_multiple,
         )
         self.closed_trades.append(trade)
-        log.info(
-            "close_position: %s qty=%d @ %.2f  pnl=%.2f  reason=%s",
-            symbol,
-            total_qty,
-            exit_price,
-            pnl,
-            reason,
+        log.debug(
+            "close_position: %s exit=%.2f reason=%s pnl=%.2f",
+            symbol, exit_price, exit_reason, pnl,
         )
         return trade
 
     # ------------------------------------------------------------------
-    # Read-only queries
+    # Queries
     # ------------------------------------------------------------------
 
-    def get_open_value(self, current_prices: dict[str, float]) -> float:
-        """Mark-to-market value of all open positions.
-
-        Falls back to entry_price for any symbol absent from current_prices.
-        """
-        total = 0.0
-        for symbol, pos in self.positions.items():
-            price = current_prices.get(symbol, pos.entry_price)
-            total += price * (pos.quantity + pos.pyramid_qty)
-        return total
-
     def get_total_value(self, current_prices: dict[str, float]) -> float:
-        """Cash + open market value."""
-        return self.cash + self.get_open_value(current_prices)
+        """Return cash + mark-to-market value of all open positions.
+
+        Positions with no price in *current_prices* fall back to entry_price.
+        """
+        pos_value = 0.0
+        for sym, pos in self.positions.items():
+            price = current_prices.get(sym, pos.entry_price)
+            pos_value += price * (pos.quantity + pos.pyramid_qty)
+        return self.cash + pos_value
+
+    def record_equity_point(self, current_prices: dict, run_date: date) -> None:
+        """Append a daily equity snapshot to equity_curve.
+
+        Called once per day by pipeline/runner.py after check_exits.
+        Each entry: {"date": str(date), "total_value": float, "cash": float}
+        """
+        open_value = sum(
+            current_prices.get(sym, pos.entry_price) * (pos.quantity + pos.pyramid_qty)
+            for sym, pos in self.positions.items()
+        )
+        self.equity_curve.append({
+            "date":        str(run_date),
+            "total_value": round(self.cash + open_value, 2),
+            "cash":        round(self.cash, 2),
+        })
 
     def get_summary(self, current_prices: dict[str, float]) -> dict[str, Any]:
-        """Return a comprehensive snapshot dict.
+        """Return full portfolio summary including P&L, risk metrics, and open positions.
 
-        Keys: cash, open_value, total_value, initial_capital,
-        total_return_pct, realised_pnl, unrealised_pnl, win_rate,
-        total_trades, open_count, closed_count, positions.
+        Returns
+        -------
+        dict with keys:
+            cash, open_value, total_value, initial_capital,
+            total_return_pct, realised_pnl, unrealised_pnl,
+            win_rate (fraction 0-1), total_trades, open_count, closed_count,
+            avg_r_multiple, profit_factor,
+            best_trade_pct, worst_trade_pct, avg_hold_days,
+            positions: list[{symbol, entry_price, current_price,
+                              unrealised_pnl_pct, days_held,
+                              stop_loss, trailing_stop, quality}]
         """
-        open_value = self.get_open_value(current_prices)
-        total_value = self.cash + open_value
-        total_return_pct = (
-            (total_value - self.initial_capital) / self.initial_capital * 100.0
-            if self.initial_capital
-            else 0.0
+        # --- open position value -------------------------------------------------
+        open_value = sum(
+            current_prices.get(sym, pos.entry_price) * (pos.quantity + pos.pyramid_qty)
+            for sym, pos in self.positions.items()
         )
-        realised_pnl = sum(t.pnl for t in self.closed_trades)
-        winning_count = sum(1 for t in self.closed_trades if t.pnl > 0)
-        win_rate = (
-            winning_count / len(self.closed_trades) * 100.0
-            if self.closed_trades
-            else 0.0
-        )
+        total = round(self.cash + open_value, 2)
 
-        unrealised_pnl = 0.0
-        positions_list: list[dict] = []
-        for symbol, pos in self.positions.items():
-            price = current_prices.get(symbol, pos.entry_price)
-            total_qty = pos.quantity + pos.pyramid_qty
-            cost = pos.entry_price * total_qty
-            mkt_val = price * total_qty
-            unreal = mkt_val - cost
-            unreal_pct = (unreal / cost * 100.0) if cost else 0.0
-            unrealised_pnl += unreal
-            positions_list.append(
-                {
-                    "symbol": symbol,
-                    "entry_date": pos.entry_date.isoformat(),
-                    "entry_price": pos.entry_price,
-                    "current_price": price,
-                    "quantity": total_qty,
-                    "stop_loss": pos.stop_loss,
-                    "target_price": pos.target_price,
-                    "setup_quality": pos.setup_quality,
-                    "sepa_score": pos.sepa_score,
-                    "pyramided": pos.pyramided,
-                    "unrealised_pnl": round(unreal, 2),
-                    "unrealised_pnl_pct": round(unreal_pct, 4),
-                }
+        # --- P&L ----------------------------------------------------------------
+        cost_basis = sum(
+            pos.entry_price * (pos.quantity + pos.pyramid_qty)
+            for pos in self.positions.values()
+        )
+        unrealised_pnl = open_value - cost_basis
+        realised_pnl = sum(t.pnl for t in self.closed_trades)
+
+        # --- win / loss stats ---------------------------------------------------
+        wins   = [t for t in self.closed_trades if t.pnl > 0]
+        losses = [t for t in self.closed_trades if t.pnl <= 0]
+        n = len(self.closed_trades)
+        win_rate = round(len(wins) / n, 4) if n else 0.0
+
+        sum_wins   = sum(t.pnl for t in wins)
+        sum_losses = abs(sum(t.pnl for t in losses))
+        profit_factor = round(sum_wins / sum_losses, 4) if sum_losses > 0 else 0.0
+
+        avg_r = round(sum(t.r_multiple for t in self.closed_trades) / n, 4) if n else 0.0
+
+        best_trade_pct  = round(max((t.pnl_pct for t in self.closed_trades), default=0.0), 4)
+        worst_trade_pct = round(min((t.pnl_pct for t in self.closed_trades), default=0.0), 4)
+
+        avg_hold_days = 0.0
+        if self.closed_trades:
+            avg_hold_days = round(
+                sum((t.exit_date - t.entry_date).days for t in self.closed_trades) / n, 2
             )
 
+        # --- open positions detail ----------------------------------------------
+        positions_list = []
+        for sym, pos in self.positions.items():
+            cp = current_prices.get(sym, pos.entry_price)
+            positions_list.append({
+                "symbol":            sym,
+                "entry_price":       pos.entry_price,
+                "current_price":     cp,
+                "unrealised_pnl_pct": round((cp / pos.entry_price - 1.0) * 100.0, 4),
+                "days_held":         pos.days_held,
+                "stop_loss":         pos.stop_loss,
+                "trailing_stop":     pos.trailing_stop,
+                "quality":           pos.setup_quality,
+            })
+
         return {
-            "cash": round(self.cash, 2),
-            "open_value": round(open_value, 2),
-            "total_value": round(total_value, 2),
-            "initial_capital": self.initial_capital,
-            "total_return_pct": round(total_return_pct, 4),
-            "realised_pnl": round(realised_pnl, 2),
-            "unrealised_pnl": round(unrealised_pnl, 2),
-            "win_rate": round(win_rate, 4),
-            "total_trades": len(self.closed_trades),
-            "open_count": len(self.positions),
-            "closed_count": len(self.closed_trades),
-            "positions": positions_list,
+            "cash":             round(self.cash, 2),
+            "open_value":       round(open_value, 2),
+            "total_value":      total,
+            "initial_capital":  self.initial_capital,
+            "total_return_pct": round((total / self.initial_capital - 1.0) * 100.0, 4),
+            "realised_pnl":     round(realised_pnl, 2),
+            "unrealised_pnl":   round(unrealised_pnl, 2),
+            "win_rate":         win_rate,
+            "total_trades":     n,
+            "open_count":       len(self.positions),
+            "closed_count":     n,
+            "avg_r_multiple":   avg_r,
+            "profit_factor":    profit_factor,
+            "best_trade_pct":   best_trade_pct,
+            "worst_trade_pct":  worst_trade_pct,
+            "avg_hold_days":    avg_hold_days,
+            "positions":        positions_list,
         }
 
     # ------------------------------------------------------------------
-    # Persistence
+    # Serialisation
     # ------------------------------------------------------------------
 
-    def to_json(self) -> dict:
-        """Serialise full portfolio state to a JSON-compatible dict."""
+    def to_json(self) -> dict[str, Any]:
+        """Return a JSON-serialisable dict; round-trips via from_json."""
+
+        def _pos(p: Position) -> dict:
+            return {
+                "symbol": p.symbol,
+                "entry_date": p.entry_date.isoformat(),
+                "entry_price": p.entry_price,
+                "quantity": p.quantity,
+                "stop_loss": p.stop_loss,
+                "target_price": p.target_price,
+                "sepa_score": p.sepa_score,
+                "setup_quality": p.setup_quality,
+                "pyramided": p.pyramided,
+                "pyramid_qty": p.pyramid_qty,
+                "peak_close": p.peak_close,
+                "trailing_stop": p.trailing_stop,
+                "days_held": p.days_held,
+            }
+
+        def _trade(t: ClosedTrade) -> dict:
+            return {
+                "symbol": t.symbol,
+                "entry_date": t.entry_date.isoformat(),
+                "exit_date": t.exit_date.isoformat(),
+                "entry_price": t.entry_price,
+                "exit_price": t.exit_price,
+                "quantity": t.quantity,
+                "pnl": t.pnl,
+                "pnl_pct": t.pnl_pct,
+                "exit_reason": t.exit_reason,
+                "r_multiple": t.r_multiple,
+            }
+
         return {
-            "cash": self.cash,
             "initial_capital": self.initial_capital,
-            "positions": {
-                sym: {
-                    "symbol": pos.symbol,
-                    "entry_date": pos.entry_date.isoformat(),
-                    "entry_price": pos.entry_price,
-                    "quantity": pos.quantity,
-                    "stop_loss": pos.stop_loss,
-                    "target_price": pos.target_price,
-                    "sepa_score": pos.sepa_score,
-                    "setup_quality": pos.setup_quality,
-                    "pyramided": pos.pyramided,
-                    "pyramid_qty": pos.pyramid_qty,
-                }
-                for sym, pos in self.positions.items()
-            },
-            "closed_trades": [
-                {
-                    "symbol": t.symbol,
-                    "entry_date": t.entry_date.isoformat(),
-                    "exit_date": t.exit_date.isoformat(),
-                    "entry_price": t.entry_price,
-                    "exit_price": t.exit_price,
-                    "quantity": t.quantity,
-                    "pnl": t.pnl,
-                    "pnl_pct": t.pnl_pct,
-                    "exit_reason": t.exit_reason,
-                    "r_multiple": t.r_multiple,
-                }
-                for t in self.closed_trades
-            ],
+            "cash": self.cash,
+            "positions": {sym: _pos(pos) for sym, pos in self.positions.items()},
+            "closed_trades": [_trade(t) for t in self.closed_trades],
+            "equity_curve": self.equity_curve,
         }
 
     @classmethod
-    def from_json(cls, data: dict, config: dict) -> "Portfolio":
-        """Reconstruct a Portfolio from a previously serialised dict."""
+    def from_json(cls, data: dict[str, Any], config: dict) -> "Portfolio":
+        """Reconstruct a Portfolio from a dict produced by to_json()."""
         portfolio = cls(initial_capital=data["initial_capital"], config=config)
         portfolio.cash = data["cash"]
+        portfolio.equity_curve = data.get("equity_curve", [])
 
-        for sym, p in data.get("positions", {}).items():
-            portfolio.positions[sym] = Position(
-                symbol=p["symbol"],
-                entry_date=date.fromisoformat(p["entry_date"]),
-                entry_price=p["entry_price"],
-                quantity=p["quantity"],
-                stop_loss=p["stop_loss"],
-                target_price=p.get("target_price"),
-                sepa_score=p["sepa_score"],
-                setup_quality=p["setup_quality"],
-                pyramided=p.get("pyramided", False),
-                pyramid_qty=p.get("pyramid_qty", 0),
+        for sym, pd_ in data.get("positions", {}).items():
+            pos = Position(
+                symbol=pd_["symbol"],
+                entry_date=date.fromisoformat(pd_["entry_date"]),
+                entry_price=pd_["entry_price"],
+                quantity=pd_["quantity"],
+                stop_loss=pd_["stop_loss"],
+                target_price=pd_.get("target_price"),
+                sepa_score=pd_["sepa_score"],
+                setup_quality=pd_["setup_quality"],
+                pyramided=pd_.get("pyramided", False),
+                pyramid_qty=pd_.get("pyramid_qty", 0),
+                peak_close=pd_.get("peak_close", 0.0),
+                trailing_stop=pd_.get("trailing_stop", 0.0),
+                days_held=pd_.get("days_held", 0),
             )
+            portfolio.positions[sym] = pos
 
-        for t in data.get("closed_trades", []):
-            portfolio.closed_trades.append(
-                ClosedTrade(
-                    symbol=t["symbol"],
-                    entry_date=date.fromisoformat(t["entry_date"]),
-                    exit_date=date.fromisoformat(t["exit_date"]),
-                    entry_price=t["entry_price"],
-                    exit_price=t["exit_price"],
-                    quantity=t["quantity"],
-                    pnl=t["pnl"],
-                    pnl_pct=t["pnl_pct"],
-                    exit_reason=t["exit_reason"],
-                    r_multiple=t["r_multiple"],
-                )
+        for td_ in data.get("closed_trades", []):
+            trade = ClosedTrade(
+                symbol=td_["symbol"],
+                entry_date=date.fromisoformat(td_["entry_date"]),
+                exit_date=date.fromisoformat(td_["exit_date"]),
+                entry_price=td_["entry_price"],
+                exit_price=td_["exit_price"],
+                quantity=td_["quantity"],
+                pnl=td_["pnl"],
+                pnl_pct=td_["pnl_pct"],
+                exit_reason=td_["exit_reason"],
+                r_multiple=td_["r_multiple"],
             )
+            portfolio.closed_trades.append(trade)
 
+        log.debug(
+            "from_json: loaded portfolio cash=%.2f open=%d closed=%d",
+            portfolio.cash, len(portfolio.positions), len(portfolio.closed_trades),
+        )
         return portfolio
+
+
+# ---------------------------------------------------------------------------
+# Module-level helpers
+# ---------------------------------------------------------------------------
+
+
+def get_r_multiple(trade: ClosedTrade) -> float:
+    """Return the R-multiple for *trade*.
+
+    R = (exit_price − entry_price) / (entry_price − stop_loss)
+
+    The value is pre-computed and stored on the trade at close time.
+    Returns 0.0 if entry_price == stop_loss (zero risk; avoid division error).
+    """
+    return trade.r_multiple

@@ -410,6 +410,54 @@ def run_daily(ctx: RunContext) -> dict:
         if not ctx.dry_run:
             persist_results(results, db, run_date)
 
+        # ── Step 7b: Paper Trading ────────────────────────────────────────────
+        # Non-critical: a failure here must never abort the reporting pipeline.
+        try:
+            if config.get("paper_trading", {}).get("enabled", False) and not ctx.dry_run:
+                from paper_trading.simulator import (
+                    check_exits,
+                    enter_trade,
+                    load_state,
+                    pyramid_position,
+                    save_state,
+                )
+                from paper_trading.order_queue import execute_pending_orders
+
+                # Latest close price for each symbol (last row of fetched OHLCV)
+                current_prices: dict[str, float] = {}
+                for sym, df in ohlcv_data_full.items():
+                    if not df.empty and "close" in df.columns:
+                        current_prices[sym] = float(df["close"].iloc[-1])
+
+                pt_portfolio = load_state(config)
+
+                # 1. Fill any orders queued from a prior non-trading day
+                execute_pending_orders(pt_portfolio, current_prices, run_date)
+
+                # 2. Close positions that hit exits today
+                closed_today = check_exits(pt_portfolio, current_prices, run_date)
+                if closed_today:
+                    log.info("Step 7b: %d position(s) closed today", len(closed_today))
+
+                # 3. Enter new trades and pyramid existing ones from today's screen
+                for r in results:
+                    cp = current_prices.get(r.symbol)
+                    if cp is None:
+                        continue
+                    enter_trade(r, pt_portfolio, cp, run_date)
+                    pyramid_position(r, pt_portfolio, cp, run_date)
+
+                save_state(pt_portfolio)
+                log.info(
+                    "Step 7b: paper trading complete — cash=%.2f  open=%d  "
+                    "closed_total=%d",
+                    pt_portfolio.cash,
+                    len(pt_portfolio.positions),
+                    len(pt_portfolio.closed_trades),
+                )
+        except Exception as exc:
+            log.error("Step 7b (paper trading) failed: %s", exc)
+
         # ── Steps 8–13: Non-critical (reports + alerts) ──────────────────────
         # Each wrapped independently; a failure in one does NOT block the others.
 

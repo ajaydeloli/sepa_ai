@@ -246,7 +246,7 @@ def test_check_exits_stop_loss():
     trade = closed[0]
     assert isinstance(trade, ClosedTrade)
     assert trade.symbol == "INFY"
-    assert trade.exit_reason == "stop_loss"
+    assert trade.exit_reason == "trailing_stop"
     assert trade.exit_price == pytest.approx(1_390.0)
     assert "INFY" not in portfolio.positions
 
@@ -362,3 +362,555 @@ def test_enter_trade_non_trading_day_queues_order(mock_td, mock_queue):
     assert call_args[0][0] == "TCS"   # symbol
     assert call_args[0][1] == "BUY"   # order_type
     assert "TCS" not in portfolio.positions
+
+
+# ---------------------------------------------------------------------------
+# Test 11 — check_exits: brokerage is deducted from pnl (and from cash)
+# ---------------------------------------------------------------------------
+
+_CONFIG_BROK = {
+    "paper_trading": {
+        "initial_capital": 100_000.0,
+        "max_positions": 10,
+        "risk_per_trade_pct": 2.0,
+        "slippage_pct": 0.15,
+        "brokerage_pct": 0.05,   # 0.05 % expressed in percent  → fraction 0.0005
+        "min_score_to_trade": 70,
+        "max_hold_days": 20,
+    }
+}
+
+
+def test_check_exits_brokerage_deducted_from_pnl():
+    """Net pnl = gross_pnl − (exit_price × qty × brokerage_fraction)."""
+    portfolio = Portfolio(initial_capital=100_000.0, config=_CONFIG_BROK)
+
+    from paper_trading.portfolio import Position as _Pos
+    pos = _Pos(
+        symbol="BROK",
+        entry_date=date(2024, 3, 1),
+        entry_price=1_000.0,
+        quantity=10,
+        stop_loss=800.0,
+        target_price=1_500.0,
+        sepa_score=80,
+        setup_quality="A",
+        peak_close=1_200.0,    # trailing stop = 1_200 × 0.93 = 1_116
+        trailing_stop=1_116.0,
+        days_held=3,
+    )
+    portfolio.positions["BROK"] = pos
+    portfolio.cash = 90_000.0
+
+    exit_price = 1_100.0   # below trailing stop 1_116 → "trailing_stop"
+    closed = check_exits(portfolio, {"BROK": exit_price}, date(2024, 3, 20))
+
+    assert len(closed) == 1
+    trade = closed[0]
+    assert trade.exit_reason == "trailing_stop"
+
+    gross_pnl = (exit_price - 1_000.0) * 10          # = 1_000.0
+    brok_frac = 0.05 / 100.0                          # = 0.0005
+    expected_brok = exit_price * 10 * brok_frac       # = 5.5
+    expected_net_pnl = gross_pnl - expected_brok      # = 994.5
+
+    assert trade.pnl == pytest.approx(expected_net_pnl, abs=0.01)
+    # Cash should also reflect the brokerage deduction
+    assert portfolio.cash == pytest.approx(90_000.0 + exit_price * 10 - expected_brok, abs=0.01)
+
+
+# ---------------------------------------------------------------------------
+# Test 12 — check_exits: days_held > max_hold_days triggers "max_hold_days" exit
+# ---------------------------------------------------------------------------
+
+_CONFIG_MAXHOLD = {
+    "paper_trading": {
+        "initial_capital": 100_000.0,
+        "max_positions": 10,
+        "risk_per_trade_pct": 2.0,
+        "slippage_pct": 0.15,
+        "brokerage_pct": 0.0,
+        "min_score_to_trade": 70,
+        "max_hold_days": 20,
+    }
+}
+
+
+def test_check_exits_max_hold_days_exit():
+    """After days_held exceeds max_hold_days the position is closed with reason='max_hold_days'."""
+    from paper_trading.portfolio import Position as _Pos
+
+    portfolio = Portfolio(initial_capital=100_000.0, config=_CONFIG_MAXHOLD)
+    pos = _Pos(
+        symbol="HELD",
+        entry_date=date(2024, 1, 1),
+        entry_price=500.0,
+        quantity=5,
+        stop_loss=400.0,
+        target_price=700.0,
+        sepa_score=75,
+        setup_quality="B",
+        peak_close=600.0,
+        trailing_stop=558.0,   # 600 × 0.93 — below current price
+        days_held=20,          # at limit; one more increment → 21 > 20
+    )
+    portfolio.positions["HELD"] = pos
+    portfolio.cash = 97_500.0
+
+    current_price = 620.0  # above trailing stop (which will ratchet to ~576) & below target
+    closed = check_exits(portfolio, {"HELD": current_price}, date(2024, 3, 21))
+
+    assert len(closed) == 1
+    trade = closed[0]
+    assert trade.exit_reason == "max_hold_days", (
+        f"Expected 'max_hold_days' but got '{trade.exit_reason}'"
+    )
+    assert trade.symbol == "HELD"
+    assert "HELD" not in portfolio.positions
+
+
+# ---------------------------------------------------------------------------
+# Test 13 — save_state / load_state: full round-trip preserves all data
+# ---------------------------------------------------------------------------
+
+
+def test_save_load_state_round_trip(tmp_path, monkeypatch):
+    """save_state followed by load_state must reproduce the exact portfolio."""
+    import paper_trading.simulator as sim_mod
+
+    monkeypatch.setattr(sim_mod, "_PORTFOLIO_FILE", tmp_path / "portfolio.json")
+    monkeypatch.setattr(sim_mod, "_TRADES_FILE", tmp_path / "trades.json")
+    monkeypatch.setattr(sim_mod, "_PT_DIR", tmp_path)
+
+    from paper_trading.portfolio import Position as _Pos
+    from paper_trading.simulator import load_state, save_state
+
+    portfolio = Portfolio(initial_capital=100_000.0, config=_CONFIG)
+
+    pos = _Pos(
+        symbol="SAVE",
+        entry_date=date(2024, 3, 1),
+        entry_price=200.0,
+        quantity=50,
+        stop_loss=180.0,
+        target_price=260.0,
+        sepa_score=78,
+        setup_quality="A",
+        peak_close=220.0,
+        trailing_stop=204.6,
+        days_held=5,
+    )
+    portfolio.positions["SAVE"] = pos
+    portfolio.cash = 90_000.0
+
+    portfolio.closed_trades.append(
+        ClosedTrade(
+            symbol="DONE",
+            entry_date=date(2024, 1, 5),
+            exit_date=date(2024, 2, 10),
+            entry_price=300.0,
+            exit_price=360.0,
+            quantity=10,
+            pnl=600.0,
+            pnl_pct=20.0,
+            exit_reason="target",
+            r_multiple=2.0,
+        )
+    )
+
+    save_state(portfolio)
+    restored = load_state(_CONFIG)
+
+    assert abs(restored.cash - portfolio.cash) < 0.01
+    assert set(restored.positions.keys()) == {"SAVE"}
+
+    rpos = restored.positions["SAVE"]
+    assert rpos.entry_price == pytest.approx(200.0)
+    assert rpos.quantity == 50
+    assert rpos.entry_date == date(2024, 3, 1)
+    assert rpos.peak_close == pytest.approx(220.0)
+    assert rpos.trailing_stop == pytest.approx(204.6)
+    assert rpos.days_held == 5
+
+    assert len(restored.closed_trades) == 1
+    ct = restored.closed_trades[0]
+    assert ct.symbol == "DONE"
+    assert ct.pnl == pytest.approx(600.0)
+    assert ct.exit_reason == "target"
+    assert ct.entry_date == date(2024, 1, 5)
+    assert ct.exit_date == date(2024, 2, 10)
+
+    # Both JSON files must actually exist on disk
+    assert (tmp_path / "portfolio.json").exists()
+    assert (tmp_path / "trades.json").exists()
+
+
+# ---------------------------------------------------------------------------
+# Test 14 — load_state with missing file: returns fresh portfolio, no exception
+# ---------------------------------------------------------------------------
+
+
+def test_load_state_missing_file_returns_fresh_portfolio(tmp_path, monkeypatch):
+    """load_state must not raise when portfolio.json is absent."""
+    import paper_trading.simulator as sim_mod
+    from paper_trading.simulator import load_state
+
+    monkeypatch.setattr(sim_mod, "_PORTFOLIO_FILE", tmp_path / "nonexistent.json")
+
+    result = load_state(_CONFIG)
+
+    assert result is not None
+    assert result.cash == pytest.approx(100_000.0)
+    assert len(result.positions) == 0
+    assert len(result.closed_trades) == 0
+
+
+# ---------------------------------------------------------------------------
+# Test 15 — record_equity_point appends a daily snapshot
+# ---------------------------------------------------------------------------
+
+
+def test_record_equity_point_appends_snapshot():
+    """record_equity_point should add one entry per call to equity_curve."""
+    portfolio = _make_portfolio(cash=100_000.0)
+    _open_position(portfolio, symbol="TCS", entry_price=3_800.0, quantity=5)
+    # After _open_position: cash = 100_000 - 3_800*5 = 81_000
+    run_date = date(2024, 3, 15)
+    current_prices = {"TCS": 4_000.0}
+
+    portfolio.record_equity_point(current_prices, run_date)
+
+    assert len(portfolio.equity_curve) == 1
+    snap = portfolio.equity_curve[0]
+    assert snap["date"] == "2024-03-15"
+    # total_value = cash (81_000) + 4_000 * 5 (20_000) = 101_000
+    assert snap["total_value"] == pytest.approx(101_000.0, abs=0.01)
+    assert snap["cash"] == pytest.approx(portfolio.cash, abs=0.01)
+
+    # A second call on the next day appends another entry
+    portfolio.record_equity_point({"TCS": 4_100.0}, date(2024, 3, 18))
+    assert len(portfolio.equity_curve) == 2
+    assert portfolio.equity_curve[1]["date"] == "2024-03-18"
+    assert portfolio.equity_curve[1]["total_value"] == pytest.approx(
+        portfolio.cash + 4_100.0 * 5, abs=0.01
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 16 — get_summary.win_rate = 0.67 for 2 wins + 1 loss
+# ---------------------------------------------------------------------------
+
+
+def _make_closed_trade(
+    pnl: float,
+    pnl_pct: float,
+    r_multiple: float = 1.0,
+    entry_date: date = date(2024, 1, 1),
+    exit_date: date = date(2024, 2, 1),
+) -> ClosedTrade:
+    return ClosedTrade(
+        symbol="X",
+        entry_date=entry_date,
+        exit_date=exit_date,
+        entry_price=100.0,
+        exit_price=110.0,
+        quantity=1,
+        pnl=pnl,
+        pnl_pct=pnl_pct,
+        exit_reason="target",
+        r_multiple=r_multiple,
+    )
+
+
+def test_get_summary_win_rate_two_wins_one_loss():
+    """win_rate must be a fraction (0-1): 2 wins out of 3 → ≈0.6667."""
+    portfolio = _make_portfolio(cash=100_000.0)
+    portfolio.closed_trades.extend([
+        _make_closed_trade(pnl=500.0,  pnl_pct=10.0),
+        _make_closed_trade(pnl=300.0,  pnl_pct=6.0),
+        _make_closed_trade(pnl=-200.0, pnl_pct=-4.0),
+    ])
+
+    summary = portfolio.get_summary({})
+
+    assert summary["win_rate"] == pytest.approx(2 / 3, abs=0.001)
+
+
+# ---------------------------------------------------------------------------
+# Test 17 — get_summary.profit_factor = sum_wins / abs_sum_losses
+# ---------------------------------------------------------------------------
+
+
+def test_get_summary_profit_factor_correct_ratio():
+    """profit_factor = total winning PnL / abs(total losing PnL)."""
+    portfolio = _make_portfolio(cash=100_000.0)
+    # wins: 500 + 300 = 800 ; losses: 200
+    portfolio.closed_trades.extend([
+        _make_closed_trade(pnl=500.0,  pnl_pct=10.0),
+        _make_closed_trade(pnl=300.0,  pnl_pct=6.0),
+        _make_closed_trade(pnl=-200.0, pnl_pct=-4.0),
+    ])
+
+    summary = portfolio.get_summary({})
+
+    assert summary["profit_factor"] == pytest.approx(800.0 / 200.0, abs=0.001)
+
+
+# ---------------------------------------------------------------------------
+# Test 18 — get_summary.avg_r_multiple from 3 closed trades
+# ---------------------------------------------------------------------------
+
+
+def test_get_summary_avg_r_multiple_three_trades():
+    """avg_r_multiple must be the arithmetic mean of all r_multiples."""
+    portfolio = _make_portfolio(cash=100_000.0)
+    r_values = [2.0, 1.5, -0.5]
+    portfolio.closed_trades.extend([
+        _make_closed_trade(pnl=200.0,  pnl_pct=20.0, r_multiple=r)
+        for r in r_values
+    ])
+
+    summary = portfolio.get_summary({})
+
+    expected = sum(r_values) / len(r_values)   # (2.0 + 1.5 - 0.5) / 3 = 1.0
+    assert summary["avg_r_multiple"] == pytest.approx(expected, abs=0.001)
+
+
+# ---------------------------------------------------------------------------
+# Test 19 — get_summary with 0 closed trades → no ZeroDivisionError
+# ---------------------------------------------------------------------------
+
+
+def test_get_summary_zero_closed_trades_no_division_error():
+    """win_rate, profit_factor, and avg_r_multiple must all default to 0 safely."""
+    portfolio = _make_portfolio(cash=100_000.0)
+
+    summary = portfolio.get_summary({})
+
+    assert summary["win_rate"] == 0.0
+    assert summary["profit_factor"] == 0.0
+    assert summary["avg_r_multiple"] == 0.0
+    assert summary["best_trade_pct"] == 0.0
+    assert summary["worst_trade_pct"] == 0.0
+    assert summary["avg_hold_days"] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Test 20 — to_json includes equity_curve; from_json restores it
+# ---------------------------------------------------------------------------
+
+
+def test_to_json_includes_equity_curve_and_from_json_restores():
+    """equity_curve must survive a full to_json → from_json round-trip."""
+    portfolio = _make_portfolio(cash=100_000.0)
+    portfolio.equity_curve = [
+        {"date": "2024-03-15", "total_value": 102_000.0, "cash": 82_000.0},
+        {"date": "2024-03-18", "total_value": 103_500.0, "cash": 82_000.0},
+    ]
+
+    data = portfolio.to_json()
+
+    # Serialised dict must contain the key
+    assert "equity_curve" in data
+    assert len(data["equity_curve"]) == 2
+
+    # Restore and verify
+    restored = Portfolio.from_json(data, _CONFIG)
+    assert len(restored.equity_curve) == 2
+    assert restored.equity_curve[0]["date"] == "2024-03-15"
+    assert restored.equity_curve[0]["total_value"] == pytest.approx(102_000.0)
+    assert restored.equity_curve[1]["date"] == "2024-03-18"
+    assert restored.equity_curve[1]["total_value"] == pytest.approx(103_500.0)
+
+
+# ===========================================================================
+# Tests 21-27 — order_queue: is_market_open, queue_order, execute_pending_orders
+# ===========================================================================
+
+import json as _json
+from datetime import datetime as _datetime
+
+try:
+    from zoneinfo import ZoneInfo as _ZoneInfo
+except ImportError:
+    from backports.zoneinfo import ZoneInfo as _ZoneInfo  # type: ignore
+
+_IST = _ZoneInfo("Asia/Kolkata")
+
+
+# ---------------------------------------------------------------------------
+# Test 21 — is_market_open: 10:00 IST on a trading day → True
+# ---------------------------------------------------------------------------
+
+
+@patch("paper_trading.order_queue.is_trading_day", return_value=True)
+def test_is_market_open_during_hours_returns_true(mock_td):
+    from paper_trading.order_queue import is_market_open
+
+    dt = _datetime(2024, 3, 15, 10, 0, tzinfo=_IST)   # 10:00 IST, trading day
+    assert is_market_open(dt) is True
+
+
+# ---------------------------------------------------------------------------
+# Test 22 — is_market_open: 16:00 IST (after close) → False
+# ---------------------------------------------------------------------------
+
+
+@patch("paper_trading.order_queue.is_trading_day", return_value=True)
+def test_is_market_open_after_close_returns_false(mock_td):
+    from paper_trading.order_queue import is_market_open
+
+    dt = _datetime(2024, 3, 15, 16, 0, tzinfo=_IST)   # 16:00 IST — after 15:30
+    assert is_market_open(dt) is False
+
+
+# ---------------------------------------------------------------------------
+# Test 23 — is_market_open: NSE holiday → False even within market hours
+# ---------------------------------------------------------------------------
+
+
+@patch("paper_trading.order_queue.is_trading_day", return_value=False)
+def test_is_market_open_on_holiday_returns_false(mock_td):
+    from paper_trading.order_queue import is_market_open
+
+    dt = _datetime(2024, 1, 26, 10, 0, tzinfo=_IST)   # Republic Day
+    assert is_market_open(dt) is False
+    mock_td.assert_called_once_with(date(2024, 1, 26))
+
+
+# ---------------------------------------------------------------------------
+# Test 24 — queue_order: written order has queued_at + expiry_date fields
+# ---------------------------------------------------------------------------
+
+
+def test_queue_order_writes_expiry_fields(tmp_path, monkeypatch):
+    """queue_order must persist queued_at and expiry_date to ORDERS_FILE."""
+    import paper_trading.order_queue as oq
+
+    monkeypatch.setattr(oq, "ORDERS_FILE", str(tmp_path / "orders.json"))
+
+    fixed_today  = date(2024, 3, 15)
+    fixed_expiry = date(2024, 3, 20)
+
+    # Patch _add_trading_days so the test is calendar-independent
+    monkeypatch.setattr(oq, "_add_trading_days", lambda _start, _n: fixed_expiry)
+    # Patch datetime.now(IST) → known date
+    with patch("paper_trading.order_queue.datetime") as mock_dt_cls:
+        mock_now = MagicMock()
+        mock_now.date.return_value = fixed_today
+        mock_dt_cls.now.return_value = mock_now
+
+        oq.queue_order("INFY", "BUY", {"score": 80, "stop_loss": 1_400.0}, expiry_days=3)
+
+    orders = _json.loads((tmp_path / "orders.json").read_text())
+    assert len(orders) == 1
+    order = orders[0]
+    assert order["symbol"]      == "INFY"
+    assert order["order_type"]  == "BUY"
+    assert order["queued_at"]   == "2024-03-15"
+    assert order["expiry_date"] == "2024-03-20"
+
+
+# ---------------------------------------------------------------------------
+# Test 25 — execute_pending_orders: valid non-expired order → Position filled
+# ---------------------------------------------------------------------------
+
+
+def test_execute_pending_orders_valid_buy_creates_position(tmp_path, monkeypatch):
+    """A BUY with expiry in the future and a known price must fill immediately."""
+    import paper_trading.order_queue as oq
+
+    monkeypatch.setattr(oq, "ORDERS_FILE", str(tmp_path / "orders.json"))
+
+    run_date = date(2024, 3, 15)
+    (tmp_path / "orders.json").write_text(_json.dumps([{
+        "symbol":      "RELIANCE",
+        "order_type":  "BUY",
+        "result":      {"score": 80, "stop_loss": 2_400.0, "target_price": 3_200.0, "setup_quality": "A"},
+        "queued_at":   "2024-03-12",
+        "expiry_date": "2024-03-20",   # not yet expired
+    }]))
+
+    portfolio     = _make_portfolio(100_000.0)
+    current_prices = {"RELIANCE": 2_800.0}
+
+    filled = oq.execute_pending_orders(portfolio, current_prices, run_date)
+
+    assert len(filled) == 1
+    assert isinstance(filled[0], Position)
+    assert filled[0].symbol == "RELIANCE"
+    assert "RELIANCE" in portfolio.positions
+    assert portfolio.cash < 100_000.0          # cash was deducted
+
+    # Queue must now be empty
+    remaining = _json.loads((tmp_path / "orders.json").read_text())
+    assert remaining == []
+
+
+# ---------------------------------------------------------------------------
+# Test 26 — execute_pending_orders: expired order is skipped and removed
+# ---------------------------------------------------------------------------
+
+
+def test_execute_pending_orders_expired_order_removed(tmp_path, monkeypatch):
+    """An order whose expiry_date < run_date must be logged and dropped from queue."""
+    import paper_trading.order_queue as oq
+
+    monkeypatch.setattr(oq, "ORDERS_FILE", str(tmp_path / "orders.json"))
+
+    run_date = date(2024, 3, 15)
+    (tmp_path / "orders.json").write_text(_json.dumps([{
+        "symbol":      "TCS",
+        "order_type":  "BUY",
+        "result":      {"score": 85, "stop_loss": 3_500.0},
+        "queued_at":   "2024-03-10",   # 5 calendar days ago
+        "expiry_date": "2024-03-14",   # yesterday — expired
+    }]))
+
+    portfolio = _make_portfolio(100_000.0)
+
+    filled = oq.execute_pending_orders(portfolio, {"TCS": 3_800.0}, run_date)
+
+    assert filled == []
+    assert "TCS" not in portfolio.positions
+    assert portfolio.cash == pytest.approx(100_000.0)   # unchanged
+
+    # Expired order must have been removed — queue is now empty
+    remaining = _json.loads((tmp_path / "orders.json").read_text())
+    assert remaining == []
+
+
+# ---------------------------------------------------------------------------
+# Test 27 — execute_pending_orders: symbol missing from prices → stays in queue
+# ---------------------------------------------------------------------------
+
+
+def test_execute_pending_orders_missing_price_keeps_in_queue(tmp_path, monkeypatch):
+    """An order for a symbol not in current_prices must remain in the queue."""
+    import paper_trading.order_queue as oq
+
+    monkeypatch.setattr(oq, "ORDERS_FILE", str(tmp_path / "orders.json"))
+
+    run_date = date(2024, 3, 15)
+    original_order = {
+        "symbol":      "WIPRO",
+        "order_type":  "BUY",
+        "result":      {"score": 75, "stop_loss": 420.0},
+        "queued_at":   "2024-03-12",
+        "expiry_date": "2024-03-20",   # still valid
+    }
+    (tmp_path / "orders.json").write_text(_json.dumps([original_order]))
+
+    portfolio = _make_portfolio(100_000.0)
+
+    # current_prices is empty → WIPRO has no price
+    filled = oq.execute_pending_orders(portfolio, {}, run_date)
+
+    assert filled == []
+    assert "WIPRO" not in portfolio.positions
+
+    # Order must still be in queue, unchanged
+    remaining = _json.loads((tmp_path / "orders.json").read_text())
+    assert len(remaining) == 1
+    assert remaining[0]["symbol"] == "WIPRO"
+    assert remaining[0]["expiry_date"] == "2024-03-20"
