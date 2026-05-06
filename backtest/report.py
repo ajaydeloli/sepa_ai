@@ -27,6 +27,7 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 
 from backtest.engine import BacktestResult, BacktestTrade
+from backtest.engine import WindowGateStats  # noqa: F401 — used in type hint below
 from utils.logger import get_logger
 
 log = get_logger(__name__)
@@ -179,6 +180,108 @@ def plot_equity_curve(equity_curve: list[dict]) -> str:
         fig.tight_layout()
 
     return _fig_to_b64(fig)
+
+
+def _render_gate_stats_table(gate_stats: list) -> str:
+    """Gate-stats summary: aggregate counts across all windows.
+
+    Shows total screened, Stage 2 pass rate, Trend Template pass rate,
+    VCP qualification rate, and entered-position count — all summed across
+    every backtest window (trading day).
+    """
+    if not gate_stats:
+        return '<p class="empty">No gate stats recorded for this backtest run.</p>'
+
+    total_screened  = sum(gs.screened          for gs in gate_stats)
+    total_stage2    = sum(gs.passed_stage2     for gs in gate_stats)
+    total_tt        = sum(gs.passed_tt         for gs in gate_stats)
+    total_vcp       = sum(gs.vcp_qualified     for gs in gate_stats)
+    total_entered   = sum(gs.entered_positions for gs in gate_stats)
+    n_windows       = len(gate_stats)
+
+    def _pct_of(numerator: int, denominator: int) -> str:
+        if denominator == 0:
+            return "—"
+        return f"{numerator / denominator * 100:.1f}%"
+
+    rows = [
+        ("<strong>Total Windows (trading days)</strong>",
+         str(n_windows), "—", "—"),
+        ("<strong>Symbols Screened (cumulative)</strong>",
+         str(total_screened),
+         _pct_of(total_screened, total_screened),
+         "Passed pre-filter, entered full rule engine"),
+        ("<strong>Passed Stage 2</strong>",
+         str(total_stage2),
+         _pct_of(total_stage2, total_screened),
+         "Stage 2 (Advancing) classification"),
+        ("<strong>Passed Trend Template</strong>",
+         str(total_tt),
+         _pct_of(total_tt, total_screened),
+         "All 8 Minervini Trend Template conditions"),
+        ("<strong>VCP Qualified</strong>",
+         str(total_vcp),
+         _pct_of(total_vcp, total_screened),
+         "Valid Volatility Contraction Pattern"),
+        ("<strong>Entered as Positions</strong>",
+         str(total_entered),
+         _pct_of(total_entered, total_screened),
+         "A+ / A setups actually traded"),
+    ]
+
+    hdr = ("<tr><th>Gate</th><th>Count</th>"
+           "<th>% of Screened</th><th>Description</th></tr>")
+    table_rows = "".join(
+        f"<tr><td>{label}</td><td>{count}</td>"
+        f"<td>{pct}</td><td style='color:#8b949e;font-size:0.82rem'>{desc}</td></tr>"
+        for label, count, pct, desc in rows
+    )
+
+    # Per-window averages line
+    avg_stage2_pct = (total_stage2 / total_screened * 100) if total_screened else 0
+    avg_tt_pct     = (total_tt     / total_screened * 100) if total_screened else 0
+    avg_vcp_pct    = (total_vcp    / total_screened * 100) if total_screened else 0
+
+    summary_line = (
+        f'<p class="meta" style="margin-top:8px">'
+        f'Average per window — Stage 2: <strong>{avg_stage2_pct:.1f}%</strong> &bull; '
+        f'Trend Template: <strong>{avg_tt_pct:.1f}%</strong> &bull; '
+        f'VCP: <strong>{avg_vcp_pct:.1f}%</strong>'
+        f'</p>'
+    )
+
+    return f"<table>{hdr}{table_rows}</table>{summary_line}"
+
+
+def _render_gate_stats_per_window(gate_stats: list, max_rows: int = 30) -> str:
+    """Per-window gate stats table (first *max_rows* windows)."""
+    if not gate_stats:
+        return ""
+
+    display = gate_stats[:max_rows]
+    hdr = (
+        "<tr><th>Date</th><th>Screened</th><th>Stage 2</th>"
+        "<th>Trend Template</th><th>VCP</th><th>Entered</th></tr>"
+    )
+    rows = []
+    for gs in display:
+        rows.append(
+            f"<tr>"
+            f"<td>{gs.date}</td>"
+            f"<td>{gs.screened}</td>"
+            f"<td>{gs.passed_stage2}</td>"
+            f"<td>{gs.passed_tt}</td>"
+            f"<td>{gs.vcp_qualified}</td>"
+            f"<td>{gs.entered_positions}</td>"
+            f"</tr>"
+        )
+    note = (
+        f'<p class="meta" style="margin-top:4px">'
+        f'Showing first {len(display)} of {len(gate_stats)} windows.'
+        f'</p>'
+        if len(gate_stats) > max_rows else ""
+    )
+    return f"<table>{hdr}{''.join(rows)}</table>{note}"
 
 
 # ---------------------------------------------------------------------------
@@ -403,6 +506,11 @@ def generate_report(
     # --- Stop comparison (optional) ---
     stop_comparison_html = _render_stop_comparison(trailing_metrics, fixed_metrics)
 
+    # --- Gate stats ---
+    gate_stats = result.gate_stats if hasattr(result, "gate_stats") else []
+    gate_stats_summary_html = _render_gate_stats_table(gate_stats)
+    gate_stats_detail_html  = _render_gate_stats_per_window(gate_stats)
+
     # --- Main HTML assembly ---
     no_trades_note = (
         '<p class="empty">⚠ No trades were generated for this backtest run.</p>'
@@ -439,6 +547,12 @@ def generate_report(
 
 <h2>VCP Quality Breakdown</h2>
 {_render_vcp_quality_table(trades)}
+
+<h2>Gate Stats — Filter Pass Rates</h2>
+{gate_stats_summary_html}
+
+<h2>Gate Stats — Per Window Detail</h2>
+{gate_stats_detail_html}
 
 {stop_comparison_html}
 

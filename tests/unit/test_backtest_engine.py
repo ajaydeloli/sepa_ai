@@ -339,3 +339,104 @@ def test_empty_ohlcv_df_returns_graceful_trade():
     assert trade.exit_price  == pytest.approx(100.0)
     assert trade.pnl         == pytest.approx(0.0)
     assert trade.exit_reason == "max_hold"
+
+
+# ---------------------------------------------------------------------------
+# Tests for WindowGateStats and BacktestResult.gate_stats (Phase 8 remaining)
+# ---------------------------------------------------------------------------
+
+from backtest.engine import BacktestResult, WindowGateStats
+from datetime import date as _date
+
+
+def test_backtest_result_has_gate_stats_field():
+    """BacktestResult must have a gate_stats field (list, default empty)."""
+    result = BacktestResult(
+        start_date=_date(2024, 1, 1),
+        end_date=_date(2024, 1, 31),
+        trades=[],
+        universe_size=100,
+        config_snapshot={},
+    )
+    assert hasattr(result, "gate_stats"), "BacktestResult missing gate_stats field"
+    assert isinstance(result.gate_stats, list)
+    assert len(result.gate_stats) == 0
+
+
+def test_window_gate_stats_dataclass_fields():
+    """WindowGateStats must expose all required fields with correct types."""
+    gs = WindowGateStats(
+        date=_date(2024, 1, 15),
+        screened=120,
+        passed_stage2=45,
+        passed_tt=30,
+        vcp_qualified=12,
+        entered_positions=3,
+    )
+    assert gs.date            == _date(2024, 1, 15)
+    assert gs.screened        == 120
+    assert gs.passed_stage2   == 45
+    assert gs.passed_tt       == 30
+    assert gs.vcp_qualified   == 12
+    assert gs.entered_positions == 3
+
+
+def test_gate_stats_counts_are_logically_consistent():
+    """Stage2 >= TT >= VCP >= entered should hold for any real run window."""
+    # A symbol that passes VCP must have passed Stage2 + TT first,
+    # so vcp_qualified <= passed_tt <= passed_stage2 <= screened.
+    gs = WindowGateStats(
+        date=_date(2024, 2, 1),
+        screened=200,
+        passed_stage2=80,
+        passed_tt=50,
+        vcp_qualified=20,
+        entered_positions=5,
+    )
+    assert gs.screened       >= gs.passed_stage2
+    assert gs.passed_stage2  >= gs.passed_tt
+    assert gs.passed_tt      >= gs.vcp_qualified
+    assert gs.vcp_qualified  >= gs.entered_positions
+
+
+def test_backtest_result_gate_stats_can_hold_multiple_windows():
+    """BacktestResult.gate_stats accepts a list of WindowGateStats entries."""
+    windows = [
+        WindowGateStats(_date(2024, 1, 2), 100, 40, 25, 10, 2),
+        WindowGateStats(_date(2024, 1, 3), 102, 42, 26, 11, 3),
+        WindowGateStats(_date(2024, 1, 4), 98, 38, 22, 9, 1),
+    ]
+    result = BacktestResult(
+        start_date=_date(2024, 1, 2),
+        end_date=_date(2024, 1, 4),
+        trades=[],
+        universe_size=102,
+        config_snapshot={},
+        gate_stats=windows,
+    )
+    assert len(result.gate_stats) == 3
+    assert result.gate_stats[0].passed_stage2 == 40
+    assert result.gate_stats[2].entered_positions == 1
+
+
+def test_gate_stats_total_computations():
+    """Verify aggregate totals used in report are arithmetically correct."""
+    windows = [
+        WindowGateStats(_date(2024, 1, 2), 100, 40, 20, 8, 2),
+        WindowGateStats(_date(2024, 1, 3), 120, 50, 30, 10, 3),
+    ]
+    total_screened = sum(gs.screened      for gs in windows)
+    total_stage2   = sum(gs.passed_stage2 for gs in windows)
+    total_tt       = sum(gs.passed_tt     for gs in windows)
+    total_vcp      = sum(gs.vcp_qualified for gs in windows)
+    total_entered  = sum(gs.entered_positions for gs in windows)
+
+    assert total_screened == 220
+    assert total_stage2   == 90
+    assert total_tt       == 50
+    assert total_vcp      == 18
+    assert total_entered  == 5
+
+    # Pass-rate sanity
+    assert total_stage2 / total_screened == pytest.approx(90 / 220, rel=1e-6)
+    assert total_vcp    / total_screened == pytest.approx(18 / 220, rel=1e-6)

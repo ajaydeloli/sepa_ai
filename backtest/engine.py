@@ -14,6 +14,8 @@ Public API
 ----------
 run_backtest(...)    → BacktestResult
 simulate_trade(...)  → BacktestTrade
+BacktestResult       → includes gate_stats: list[WindowGateStats]
+WindowGateStats      → per-window gate-pass counts (stage2, tt, vcp)
 """
 
 from __future__ import annotations
@@ -61,12 +63,49 @@ class BacktestTrade:
 
 
 @dataclass
+class WindowGateStats:
+    """Per-window (per trading day) gate-pass statistics.
+
+    Captures how many symbols made it through each successive filter gate on
+    each backtest day.  The counts come directly from the ``SEPAResult`` list
+    returned by ``run_screen`` so they reflect the same rules the live
+    screener uses.
+
+    Attributes
+    ----------
+    date:
+        The trading day this snapshot refers to.
+    screened:
+        Number of symbols that entered the full rule engine after pre-filter.
+        Equals ``len(run_screen(...))`` for that day.
+    passed_stage2:
+        Symbols classified as Stage 2 (``SEPAResult.stage == 2``).
+    passed_tt:
+        Symbols passing all 8 Trend Template conditions
+        (``SEPAResult.trend_template_pass is True``).
+    vcp_qualified:
+        Symbols with a valid VCP pattern (``SEPAResult.vcp_qualified is True``).
+    entered_positions:
+        A+ / A candidates that were actually entered as new positions that day
+        (may be 0 if max-positions cap was full or no valid entry price).
+    """
+
+    date: date
+    screened: int
+    passed_stage2: int
+    passed_tt: int
+    vcp_qualified: int
+    entered_positions: int
+
+
+@dataclass
 class BacktestResult:
     start_date: date
     end_date: date
     trades: list[BacktestTrade]
     universe_size: int
     config_snapshot: dict
+    gate_stats: list[WindowGateStats] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -375,10 +414,12 @@ def run_backtest(
         return BacktestResult(
             start_date=start_date, end_date=end_date,
             trades=[], universe_size=len(universe), config_snapshot=config,
+            gate_stats=[],
         )
 
     open_positions: dict[str, _Position] = {}
     completed_trades: list[BacktestTrade] = []
+    gate_stats: list[WindowGateStats] = []
 
     log.info(
         "run_backtest: %d trading days from %s to %s | universe=%d | tsp=%.2f%%",
@@ -445,6 +486,12 @@ def run_backtest(
             log.warning("run_backtest: run_screen failed on %s: %s", backtest_date, exc)
             continue
 
+        # ── Gate stats: count per-gate pass rates for this window ─────────
+        n_stage2  = sum(1 for r in results if r.stage == 2)
+        n_tt      = sum(1 for r in results if r.trend_template_pass)
+        n_vcp     = sum(1 for r in results if r.vcp_qualified)
+        n_entered = 0   # filled in step 3 below
+
         # ── Step 3: Enter A+ / A candidates ──────────────────────────────
         for result in results:
             if result.setup_quality not in ("A+", "A"):
@@ -477,11 +524,26 @@ def run_backtest(
                 sepa_score=result.score,
             )
             open_positions[result.symbol] = pos
+            n_entered += 1
             log.info(
                 "run_backtest: ENTERED %s @ %.2f on %s (quality=%s, score=%d)",
                 result.symbol, result.entry_price, backtest_date,
                 result.setup_quality, result.score,
             )
+
+        # Record gate stats for this window
+        gate_stats.append(WindowGateStats(
+            date=backtest_date,
+            screened=len(results),
+            passed_stage2=n_stage2,
+            passed_tt=n_tt,
+            vcp_qualified=n_vcp,
+            entered_positions=n_entered,
+        ))
+        log.debug(
+            "run_backtest: gate_stats %s — screened=%d stage2=%d tt=%d vcp=%d entered=%d",
+            backtest_date, len(results), n_stage2, n_tt, n_vcp, n_entered,
+        )
 
     # ── Force-close any remaining open positions at end_date ──────────────
     for symbol, pos in open_positions.items():
@@ -505,4 +567,5 @@ def run_backtest(
         trades=completed_trades,
         universe_size=len(universe),
         config_snapshot=config,
+        gate_stats=gate_stats,
     )
