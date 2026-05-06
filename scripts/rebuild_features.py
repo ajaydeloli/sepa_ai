@@ -2,27 +2,26 @@
 """
 scripts/rebuild_features.py
 ----------------------------
-CLI: Recompute all feature Parquet files from scratch.
+CLI: Recompute feature Parquet files that are missing or stale.
 
-Reads the processed OHLCV Parquet files for each symbol and calls
-``features.feature_store.bootstrap()`` to regenerate every feature file.
-Run this once after a fresh setup or whenever the feature schema changes.
+For each symbol in the resolved universe this script calls
+``features.feature_store.needs_bootstrap()`` and only rebuilds when the
+feature file is absent / empty — or when ``--force`` is passed.
 
 Usage examples
 --------------
-    python scripts/rebuild_features.py --universe nifty500
-    python scripts/rebuild_features.py --universe all
-    python scripts/rebuild_features.py --symbols "RELIANCE,TCS,INFY"
+    python scripts/rebuild_features.py
+    python scripts/rebuild_features.py --universe nse_all
+    python scripts/rebuild_features.py --universe /path/to/symbols.csv
+    python scripts/rebuild_features.py --symbol RELIANCE
+    python scripts/rebuild_features.py --universe nifty500 --force
     python scripts/rebuild_features.py --universe nifty500 --dry-run
     python scripts/rebuild_features.py --universe nifty500 --workers 8
 
-Options
--------
---universe  : "nifty500" | "all" | "custom"  (default: "nifty500")
---symbols   : comma-separated list (overrides --universe if provided)
---config    : path to settings.yaml (default: "config/settings.yaml")
---dry-run   : log what would happen, skip all writes
---workers   : number of parallel workers for ProcessPoolExecutor (default: 4)
+Exit codes
+----------
+0  — all attempted rebuilds succeeded (or nothing to do).
+1  — one or more symbols failed.
 """
 
 from __future__ import annotations
@@ -39,14 +38,16 @@ import yaml
 _ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ROOT))
 
-from ingestion.nsepython_universe import get_universe  # noqa: E402
-from utils.logger import get_logger  # noqa: E402
+from features.feature_store import bootstrap, needs_bootstrap  # noqa: E402
+from ingestion.universe_loader import load_watchlist_file      # noqa: E402
+from ingestion.nsepython_universe import get_universe          # noqa: E402
+from utils.logger import get_logger                            # noqa: E402
 
 log = get_logger("rebuild_features")
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Config
 # ---------------------------------------------------------------------------
 
 def _load_config(path: Path) -> dict:
@@ -54,23 +55,47 @@ def _load_config(path: Path) -> dict:
         return yaml.safe_load(fh)
 
 
+# ---------------------------------------------------------------------------
+# Argument parsing
+# ---------------------------------------------------------------------------
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="rebuild_features",
-        description="SEPA AI — rebuild all feature Parquet files from scratch",
+        description="SEPA AI — rebuild feature Parquet files that are missing or stale",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
         "--universe",
         default="nifty500",
-        choices=["nifty500", "all", "custom"],
-        help='Symbol universe to rebuild. Ignored when --symbols is provided.',
+        metavar="UNIVERSE",
+        help=(
+            'Symbol universe: "nifty500", "nse_all", or path to a CSV file '
+            "with a 'symbol' column.  Ignored when --symbol is provided."
+        ),
     )
     parser.add_argument(
-        "--symbols",
+        "--symbol",
         default=None,
-        metavar="SYMBOLS",
-        help='Comma-separated symbols, e.g. "RELIANCE,TCS,INFY". Overrides --universe.',
+        metavar="STR",
+        help="Rebuild a single symbol only (overrides --universe).",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Rebuild even if the feature file exists and seems valid.",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="List symbols that would be rebuilt; do not write any files.",
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=4,
+        metavar="N",
+        help="Parallel worker processes.",
     )
     parser.add_argument(
         "--config",
@@ -78,61 +103,95 @@ def _parse_args() -> argparse.Namespace:
         metavar="FILE",
         help="Path to settings.yaml.",
     )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Log what would happen without writing any files.",
-    )
-    parser.add_argument(
-        "--workers",
-        type=int,
-        default=4,
-        metavar="N",
-        help="Number of parallel workers (ProcessPoolExecutor).",
-    )
     return parser.parse_args()
 
+# ---------------------------------------------------------------------------
+# Universe / symbol resolution
+# ---------------------------------------------------------------------------
 
-def _resolve_symbols(args: argparse.Namespace, config: dict) -> list[str]:
-    """Return the list of symbols to rebuild, respecting --symbols override."""
-    if args.symbols:
-        symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
-        log.info("--symbols override: %d symbols specified on CLI.", len(symbols))
-        return symbols
+def _resolve_universe(args: argparse.Namespace, config: dict) -> list[str]:
+    """Return the list of symbols to consider, before needs_bootstrap filtering."""
 
-    # Use universe loader
-    index = args.universe
-    if index == "custom":
-        # Fall back to whatever is in config
-        index = config.get("universe", {}).get("index", "nifty500")
-    log.info("Loading universe '%s' via nsepython …", index)
-    try:
-        symbols = get_universe(index)
-        log.info("Universe '%s' resolved to %d symbols.", index, len(symbols))
-    except Exception as exc:  # noqa: BLE001
-        log.error("Failed to load universe '%s': %s", index, exc)
+    # Single-symbol shortcut
+    if args.symbol:
+        symbol = args.symbol.strip().upper()
+        log.info("--symbol override: single symbol %s.", symbol)
+        return [symbol]
+
+    universe_arg = args.universe.strip()
+
+    # Path to CSV file
+    csv_path = Path(universe_arg)
+    if csv_path.suffix.lower() == ".csv" or csv_path.exists():
+        log.info("Loading universe from CSV file: %s", csv_path)
+        try:
+            symbols = load_watchlist_file(csv_path)
+            log.info("CSV universe loaded: %d symbols.", len(symbols))
+            return symbols
+        except Exception as exc:  # noqa: BLE001
+            log.error("Failed to load universe CSV '%s': %s", csv_path, exc)
+            sys.exit(1)
+
+    # Named universe: nifty500 or nse_all
+    known = {"nifty500", "nse_all"}
+    if universe_arg not in known:
+        log.error(
+            "Unknown --universe %r.  Expected one of %s or a path to a CSV file.",
+            universe_arg,
+            sorted(known),
+        )
         sys.exit(1)
-    return symbols
+
+    log.info("Loading universe '%s' via nsepython …", universe_arg)
+    try:
+        symbols = get_universe(universe_arg)
+        log.info("Universe '%s' resolved to %d symbols.", universe_arg, len(symbols))
+        return symbols
+    except Exception as exc:  # noqa: BLE001
+        log.error("Failed to load universe '%s': %s", universe_arg, exc)
+        sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
-# Worker: runs in a subprocess (must be importable at module level)
+# Worker (subprocess-safe — must be importable at module level)
 # ---------------------------------------------------------------------------
 
-def _bootstrap_symbol(symbol: str, config: dict) -> str:
-    """Bootstrap a single symbol.  Called inside a worker process.
-
-    Returns the symbol string on success.  Raises on failure so the
-    Future carries the exception back to the main process.
-    """
-    # Re-import here because this runs in a fresh subprocess
+def _worker_bootstrap(symbol: str, config: dict) -> str:
+    """Bootstrap *symbol* inside a worker process.  Returns symbol on success."""
     import sys as _sys
     from pathlib import Path as _Path
     _sys.path.insert(0, str(_Path(__file__).resolve().parent.parent))
 
-    from features.feature_store import bootstrap  # noqa: PLC0415
-    bootstrap(symbol, config)
+    from features.feature_store import bootstrap as _bootstrap  # noqa: PLC0415
+    _bootstrap(symbol, config)
     return symbol
+
+
+# ---------------------------------------------------------------------------
+# Core rebuild logic
+# ---------------------------------------------------------------------------
+
+def _pick_symbols_to_rebuild(
+    all_symbols: list[str],
+    config: dict,
+    force: bool,
+) -> list[str]:
+    """Return only those symbols that need rebuilding."""
+    if force:
+        return list(all_symbols)
+
+    to_rebuild: list[str] = []
+    for sym in all_symbols:
+        try:
+            if needs_bootstrap(sym, config):
+                to_rebuild.append(sym)
+            else:
+                log.debug("Skipping %s — feature file OK", sym)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("needs_bootstrap(%s) raised %s — will rebuild.", sym, exc)
+            to_rebuild.append(sym)
+
+    return to_rebuild
 
 
 # ---------------------------------------------------------------------------
@@ -151,32 +210,50 @@ def main() -> None:
         sys.exit(1)
     config = _load_config(config_path)
 
-    # ── Symbol list ────────────────────────────────────────────────────────
-    symbols = _resolve_symbols(args, config)
-    total = len(symbols)
+    # ── All symbols in universe ────────────────────────────────────────────
+    all_symbols = _resolve_universe(args, config)
+    total = len(all_symbols)
 
     if total == 0:
         log.warning("No symbols resolved — nothing to do.")
         return
 
-    # ── Dry-run: print and exit ────────────────────────────────────────────
+    # ── Filter: which ones actually need work? ─────────────────────────────
+    to_rebuild = _pick_symbols_to_rebuild(all_symbols, config, force=args.force)
+    n_rebuild = len(to_rebuild)
+    n_skip = total - n_rebuild
+
+    log.info(
+        "Universe: %d symbols | to rebuild: %d | skipping (feature file OK): %d",
+        total, n_rebuild, n_skip,
+    )
+
+    # ── Dry-run ────────────────────────────────────────────────────────────
     if args.dry_run:
-        log.info(
-            "[DRY-RUN] Would rebuild features for %d symbols using %d workers.",
-            total, args.workers,
+        qualifier = " (force)" if args.force else " (needs_bootstrap)"
+        print(
+            f"\n[DRY-RUN] Would rebuild {n_rebuild}/{total} symbols{qualifier}:"
         )
-        print(f"\n[DRY-RUN] Would rebuild {total} symbols (workers={args.workers}):")
-        for sym in symbols:
+        for sym in to_rebuild:
             print(f"  {sym}")
+        if n_skip:
+            print(f"\n  ({n_skip} symbol(s) skipped — feature file already OK)")
         print()
         return
 
+    if n_rebuild == 0:
+        print(f"\nAll {total} symbols are up-to-date — nothing to rebuild.")
+        return
+
     # ── Live run ───────────────────────────────────────────────────────────
-    log.info(
-        "Starting feature rebuild for %d symbols with %d workers …",
-        total, args.workers,
+    print(
+        f"\nRebuilding {n_rebuild}/{total} symbols "
+        f"(workers={args.workers}) …\n"
     )
-    print(f"\nRebuilding features for {total} symbols (workers={args.workers}) …\n")
+    log.info(
+        "Starting rebuild for %d/%d symbols with %d workers …",
+        n_rebuild, total, args.workers,
+    )
 
     start_time = time.monotonic()
     success: int = 0
@@ -185,8 +262,8 @@ def main() -> None:
 
     with ProcessPoolExecutor(max_workers=args.workers) as executor:
         future_to_sym = {
-            executor.submit(_bootstrap_symbol, sym, config): sym
-            for sym in symbols
+            executor.submit(_worker_bootstrap, sym, config): sym
+            for sym in to_rebuild
         }
 
         for future in as_completed(future_to_sym):
@@ -194,33 +271,36 @@ def main() -> None:
             try:
                 future.result()
                 success += 1
+                log.info("Rebuilt %s", sym)
             except Exception as exc:  # noqa: BLE001
                 log.error("bootstrap(%s) FAILED: %s", sym, exc)
                 failed += 1
                 failed_symbols.append(sym)
 
-            # Progress update every 10 symbols
             n_done = success + failed
             if n_done % 10 == 0:
-                print(f"  Rebuilt {n_done}/{total} symbols …")
+                print(f"  Progress: {n_done}/{n_rebuild} …")
 
     elapsed = time.monotonic() - start_time
-    print(f"\nRebuilt {success} / {total} symbols in {elapsed:.1f}s")
-    if failed_symbols:
-        log.warning(
-            "Failed symbols (%d): %s", len(failed_symbols), ", ".join(failed_symbols)
-        )
-        print(f"Failed symbols ({failed}): {', '.join(failed_symbols)}")
 
+    # ── Summary ────────────────────────────────────────────────────────────
+    print(f"\nRebuilt {success}/{total} symbols in {elapsed:.1f}s")
     log.info(
-        "Feature rebuild complete: %d succeeded, %d failed, elapsed=%.1fs",
-        success, failed, elapsed,
+        "Rebuild complete: %d rebuilt, %d skipped, %d failed, elapsed=%.1fs",
+        success, n_skip, failed, elapsed,
     )
+
+    if failed_symbols:
+        print(f"Failures: {failed}")
+        log.warning(
+            "Failed symbols (%d): %s", failed, ", ".join(failed_symbols)
+        )
+        sys.exit(1)
 
 
 if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        log.info("Rebuild interrupted by user (KeyboardInterrupt). Exiting cleanly.")
+        log.info("Rebuild interrupted by user. Exiting cleanly.")
         sys.exit(0)

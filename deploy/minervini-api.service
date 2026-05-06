@@ -1,0 +1,20 @@
+[Unit]
+Description=Minervini FastAPI Server
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/projects/sepa_ai
+EnvironmentFile=/home/ubuntu/projects/sepa_ai/.env
+ExecStart=/home/ubuntu/projects/sepa_ai/.venv/bin/uvicorn api.main:app \
+    --host 0.0.0.0 \
+    --port 8000 \
+    --workers 2
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

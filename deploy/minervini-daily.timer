@@ -1,0 +1,10 @@
+[Unit]
+Description=Minervini Daily Screen Timer (Mon-Fri 15:35 IST / 10:05 UTC)
+
+[Timer]
+# 15:35 IST = 10:05 UTC. systemd OnCalendar uses UTC by default.
+OnCalendar=Mon-Fri 10:05:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target

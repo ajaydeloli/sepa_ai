@@ -1,0 +1,53 @@
+name: Test Suite
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+jobs:
+  test:
+    name: pytest + lint (Python 3.11)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install project + dev dependencies
+        run: pip install -e ".[dev]"
+
+      # ── Smoke tests first (fast gate — fail early) ──────────────────
+      - name: Run smoke tests
+        run: make test-smoke
+
+      # ── Full test suite with coverage ───────────────────────────────
+      - name: Run full test suite with coverage
+        run: make test
+        env:
+          # Prevent any accidental real HTTP calls in CI
+          TELEGRAM_BOT_TOKEN: "FAKE_TOKEN_CI"
+          TELEGRAM_CHAT_ID: "0"
+          OPENAI_API_KEY: "sk-fake-ci-key"
+          GROQ_API_KEY: "gsk_fake-ci-key"
+
+      # ── Lint ─────────────────────────────────────────────────────────
+      - name: Run ruff linter
+        run: make lint
+
+      # ── Upload HTML coverage report as artifact ───────────────────────
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-html
+          path: htmlcov/
+          retention-days: 14

@@ -1,0 +1,15 @@
+[Unit]
+Description=Minervini Daily Stock Screen
+After=network.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/projects/sepa_ai
+EnvironmentFile=/home/ubuntu/projects/sepa_ai/.env
+ExecStart=/home/ubuntu/projects/sepa_ai/.venv/bin/python scripts/run_daily.py --date today
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

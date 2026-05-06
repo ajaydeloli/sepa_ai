@@ -1,0 +1,20 @@
+[Unit]
+Description=Minervini Streamlit Dashboard
+After=network.target minervini-api.service
+Requires=minervini-api.service
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/projects/sepa_ai
+EnvironmentFile=/home/ubuntu/projects/sepa_ai/.env
+ExecStart=/home/ubuntu/projects/sepa_ai/.venv/bin/streamlit run dashboard/app.py \
+    --server.port 8501 \
+    --server.headless true
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
