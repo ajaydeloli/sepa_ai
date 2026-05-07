@@ -10,7 +10,8 @@ WorkingDirectory=/home/ubuntu/projects/sepa_ai
 EnvironmentFile=/home/ubuntu/projects/sepa_ai/.env
 ExecStart=/home/ubuntu/projects/sepa_ai/.venv/bin/streamlit run dashboard/app.py \
     --server.port 8501 \
-    --server.headless true
+    --server.headless true \
+    --server.address 0.0.0.0
 Restart=always
 RestartSec=5
 StandardOutput=journal

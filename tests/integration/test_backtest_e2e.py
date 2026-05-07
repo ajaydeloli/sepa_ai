@@ -135,6 +135,9 @@ def _screen_result(symbol: str, quality: str = "A+") -> SimpleNamespace:
         entry_price=100.0,
         stop_loss=88.0,
         score=85,
+        stage=2,
+        trend_template_pass=True,
+        vcp_qualified=True,
     )
 
 

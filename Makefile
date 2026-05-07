@@ -1,4 +1,4 @@
-.PHONY: install test test-coverage test-smoke test-integration lint format daily bootstrap watchlist-only backtest rebuild api dashboard paper-reset deploy status logs logs-api help
+.PHONY: install test test-coverage test-smoke test-integration lint format daily bootstrap watchlist-only backtest rebuild api dashboard dashboard-dev test-dashboard paper-reset deploy status logs logs-api help
 
 PYTHON := .venv/bin/python
 PIP    := .venv/bin/pip
@@ -17,6 +17,8 @@ help:
 	@echo "  bootstrap     Full history download + feature compute"
 	@echo "  backtest      Run backtest (pass START= END= env vars)"
 	@echo "  rebuild       Recompute all features from scratch"
+	@echo "  dashboard-dev  Start Streamlit in dev mode (auto-reload, localhost only)"
+	@echo "  test-dashboard Run dashboard component unit tests"
 	@echo "  api           Start FastAPI server (dev mode)"
 	@echo "  dashboard     Start Streamlit dashboard"
 	@echo "  paper-reset   Reset paper trading portfolio"
@@ -67,6 +69,12 @@ api:
 
 dashboard:
 	$(PYTHON) -m streamlit run dashboard/app.py --server.port 8501
+
+dashboard-dev:
+	$(PYTHON) -m streamlit run dashboard/app.py --server.port 8501 --server.address localhost
+
+test-dashboard:
+	$(PYTEST) tests/unit/test_dashboard_components.py -v
 
 paper-reset:
 	$(PYTHON) -c "from paper_trading.simulator import reset_portfolio; reset_portfolio(confirm=True)"

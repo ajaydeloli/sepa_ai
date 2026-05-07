@@ -65,6 +65,15 @@ systemctl enable --now minervini-daily.timer
 
 # ── Status summary ─────────────────────────────────────────────────────────────
 echo ""
+# ── Dashboard health check ─────────────────────────────────────────────────────
+info "Waiting for dashboard to start…"
+sleep 5
+if curl -sf http://localhost:8501/healthz | grep -q "ok"; then
+    info "Dashboard OK — http://localhost:8501"
+else
+    warn "Dashboard may not be ready yet (healthz did not return 'ok'). Check: journalctl -u minervini-dashboard.service -n 20"
+fi
+
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 info "Service status:"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

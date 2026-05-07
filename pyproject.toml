@@ -84,3 +84,10 @@ markers = [
     "slow: marks tests as slow (bootstrap/full-pipeline tests; deselect with '-m not slow')",
     "benchmark: performance benchmarks with wall-clock thresholds",
 ]
+filterwarnings = [
+    # Starlette internally references the old HTTP_422_UNPROCESSABLE_ENTITY constant
+    # name (renamed to HTTP_422_UNPROCESSABLE_CONTENT in newer Starlette).  This is
+    # a library-internal deprecation — not triggered by our code — and will resolve
+    # when the Starlette version bundled with FastAPI is updated.
+    "ignore:'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated:DeprecationWarning:starlette",
+]
