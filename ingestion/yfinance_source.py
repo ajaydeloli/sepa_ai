@@ -9,9 +9,9 @@ requires for National Stock Exchange-listed instruments.
 Batch fetching
 --------------
 :meth:`fetch_universe_batch` issues a *single* ``yf.download()`` call for all
-requested symbols.  When more than one ticker is downloaded, yfinance returns
-a MultiIndex DataFrame; this module handles both the single-ticker (flat
-columns) and multi-ticker (MultiIndex) shapes transparently.
+requested symbols.  yfinance ≥1.0 always returns a MultiIndex DataFrame
+``(field, ticker)`` regardless of how many tickers are requested; this module
+handles that shape transparently for both single- and multi-ticker calls.
 
 Retry policy
 ------------
@@ -50,8 +50,16 @@ def _strip_ns(ticker: str) -> str:
 
 
 def _normalise_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """Lowercase column names and keep only OHLCV columns."""
+    """Lowercase column names and keep only OHLCV columns.
+
+    yfinance ≥1.0 returns a MultiIndex ``(field, ticker)`` even for a single-
+    ticker download.  We flatten to the field level before further processing
+    so the rest of the pipeline always sees plain column names.
+    """
     df = df.copy()
+    # Flatten MultiIndex columns produced by yfinance ≥1.0 (field, ticker) → field
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
     df.columns = [str(c).lower() for c in df.columns]
     # Keep only the five canonical columns (drop Adj Close, Dividends, etc.)
     present = [c for c in ("open", "high", "low", "close", "volume") if c in df.columns]

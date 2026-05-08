@@ -34,6 +34,7 @@ data/metadata/
 data/paper_trading/
 data/*.db
 data/*.sqlite
+data/
 
 # ── Reports & generated outputs ───────────────────────────────────────────────
 reports/output/

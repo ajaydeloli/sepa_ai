@@ -56,6 +56,7 @@ def validate(
     df: pd.DataFrame,
     symbol: str,
     run_date: date | None = None,
+    min_rows: int = _MIN_ROWS,
 ) -> pd.DataFrame:
     """Validate and clean an OHLCV DataFrame.
 
@@ -71,6 +72,11 @@ def validate(
     run_date:
         Optional reference date for gap detection.  When *None* the last
         date in the DataFrame is used as the upper bound.
+    min_rows:
+        Minimum number of rows required after cleaning.  Defaults to
+        ``_MIN_ROWS`` (50) for full historical loads.  Pass a smaller
+        value (e.g. ``1``) for incremental daily fetches where only the
+        most recent rows are needed.
 
     Returns
     -------
@@ -83,7 +89,7 @@ def validate(
         * Missing required columns.
         * More than 5 % of rows fail sanity checks.
     InsufficientDataError
-        Fewer than 50 rows after cleaning.
+        Fewer than *min_rows* rows after cleaning.
     """
     # ── 1. Schema check ────────────────────────────────────────────────────
     _check_schema(df, symbol)
@@ -99,10 +105,10 @@ def validate(
     _detect_gaps(df, symbol)
 
     # ── 5. Minimum length ─────────────────────────────────────────────────
-    if len(df) < _MIN_ROWS:
+    if len(df) < min_rows:
         raise InsufficientDataError(
             f"{symbol}: insufficient data after validation",
-            required=_MIN_ROWS,
+            required=min_rows,
             available=len(df),
         )
 

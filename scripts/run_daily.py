@@ -233,7 +233,7 @@ def main() -> None:
 
         # ── Validate ───────────────────────────────────────────────────────
         try:
-            df = validate(df, symbol)
+            df = validate(df, symbol, run_date=run_date, min_rows=1)
         except (DataValidationError, InsufficientDataError) as exc:
             log.warning("validate(%s) failed: %s", symbol, exc)
             failed += 1
