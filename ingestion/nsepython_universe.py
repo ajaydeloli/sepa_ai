@@ -5,8 +5,8 @@ NSE symbol-list helpers backed by the ``nsepython`` library.
 
 Public surface
 --------------
-* :func:`get_nifty500`  — Nifty-500 constituent tickers (cached per calendar day).
-* :func:`get_nse_all`   — All ~2 000 NSE equity tickers (cached per calendar day).
+* :func:`get_nifty500`  — Nifty-500 constituent tickers via NSE archives CSV (cached per calendar day).
+* :func:`get_nse_all`   — All ~2 300 NSE equity tickers via ``nsepython.nse_eq_symbols`` (cached per calendar day).
 * :func:`get_universe`  — Dispatcher; choose by *index* name.
 
 Cache strategy
@@ -116,16 +116,34 @@ def get_nifty500(cache_date: str | None = None) -> list[str]:
     _key = cache_date or _today_str()  # noqa: F841  (key baked into lru_cache arg)
 
     try:
-        from nsepython import nse_get_index_list, nse500_symbols  # type: ignore[import]
+        import io
 
-        # nsepython ≥2.9 exposes nse500_symbols()
-        raw = nse500_symbols()
-        symbols = _clean_symbols(raw)
+        import pandas as pd
+        import requests
+
+        # NSE publishes a static CSV of Nifty-500 constituents on their
+        # archives server — no session cookie required.
+        _CSV_URL = (
+            "https://nsearchives.nseindia.com/content/indices/ind_nifty500list.csv"
+        )
+        resp = requests.get(
+            _CSV_URL,
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=15,
+        )
+        resp.raise_for_status()
+
+        df = pd.read_csv(io.StringIO(resp.text))
+        symbols = [
+            str(s).strip().upper()
+            for s in df["Symbol"].dropna()
+            if str(s).strip()
+        ]
 
         if not symbols:
             log.warning(
-                "nsepython.nse500_symbols() returned an empty result — "
-                "check NSE connectivity or nsepython version."
+                "get_nifty500: Nifty-500 CSV returned an empty Symbol column — "
+                "check NSE connectivity."
             )
             return []
 
@@ -139,13 +157,12 @@ def get_nifty500(cache_date: str | None = None) -> list[str]:
 
     except ImportError:
         log.warning(
-            "nsepython is not installed — cannot load Nifty-500 universe. "
-            "Install it with: pip install nsepython"
+            "requests or pandas is not installed — cannot load Nifty-500 universe."
         )
         return []
     except Exception as exc:  # noqa: BLE001
         log.warning(
-            "get_nifty500: nsepython call failed (%s). "
+            "get_nifty500: failed to fetch Nifty-500 CSV (%s). "
             "Returning empty universe — check NSE connectivity.",
             exc,
         )
@@ -169,16 +186,17 @@ def get_nse_all(cache_date: str | None = None) -> list[str]:
     _key = cache_date or _today_str()  # noqa: F841
 
     try:
-        from nsepython import nsefetch  # type: ignore[import]
+        from nsepython import nse_eq_symbols  # type: ignore[import]
 
-        # NSE bhavcopy / equity list endpoint
-        url = "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
-        raw = nsefetch(url)
-        symbols = _clean_symbols(raw)
+        # nse_eq_symbols() fetches the full NSE equity list (~2 300 tickers)
+        # from the NSE EQUITY_L.csv archive — the former nsefetch() approach
+        # used the same underlying file.
+        raw: list[str] = nse_eq_symbols()
+        symbols = [str(s).strip().upper() for s in raw if str(s).strip()]
 
         if not symbols:
             log.warning(
-                "get_nse_all: nsefetch returned an empty result — "
+                "get_nse_all: nse_eq_symbols() returned an empty result — "
                 "NSE equity list unavailable."
             )
             return []
