@@ -187,6 +187,7 @@ def run_screen(
     n_workers: int = 4,
     fundamentals_map: dict[str, dict] | None = None,
     news_scores: dict[str, float] | None = None,
+    force_symbols: list[str] | None = None,
 ) -> list[SEPAResult]:
     """Full SEPA screening pipeline.
 
@@ -221,6 +222,11 @@ def run_screen(
     news_scores:
         Optional dict {symbol → pre-computed news score (-100..+100)}.
         Passed through to each worker so score_symbol can use it.
+    force_symbols:
+        Symbols that must be processed regardless of pre_filter result
+        (e.g. all watchlist symbols).  They are appended to passed_symbols
+        after pre_filter runs, so they always get a screen_results row
+        (even if it is FAIL) rather than showing as "--" in the UI.
 
     Returns
     -------
@@ -242,6 +248,18 @@ def run_screen(
     log.info(
         "run_screen: pre_filter passed %d/%d symbols", n_passed, total
     )
+
+    # Merge in any force_symbols (e.g. watchlist) that didn't pass pre_filter.
+    # Using dict.fromkeys preserves insertion order and deduplicates.
+    if force_symbols:
+        passed_set = set(passed_symbols)
+        extras = [s for s in force_symbols if s not in passed_set]
+        if extras:
+            log.info(
+                "run_screen: force_symbols — adding %d symbol(s) that missed "
+                "pre_filter: %s", len(extras), extras,
+            )
+            passed_symbols = list(dict.fromkeys(passed_symbols + extras))
 
     # ── Step 2: RS rating pass (cross-symbol) ─────────────────────────────
     log.info("run_screen: Step 2 — run_rs_rating_pass")

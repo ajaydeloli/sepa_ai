@@ -1,4 +1,4 @@
-.PHONY: install test test-coverage test-smoke test-integration lint format daily bootstrap watchlist-only backtest rebuild api dashboard dashboard-dev test-dashboard paper-reset deploy status logs logs-api frontend-dev frontend-build frontend-deploy help
+.PHONY: install test test-coverage test-smoke test-integration lint format daily bootstrap watchlist-only backtest rebuild api dashboard dashboard-dev test-dashboard paper-reset reset reset-dry deploy status logs logs-api frontend-dev frontend-build frontend-deploy help
 
 PYTHON := .venv/bin/python
 PIP    := .venv/bin/pip
@@ -22,6 +22,8 @@ help:
 	@echo "  api           Start FastAPI server (dev mode)"
 	@echo "  dashboard     Start Streamlit dashboard"
 	@echo "  paper-reset   Reset paper trading portfolio"
+	@echo "  reset         Full project reset to fresh-install state (interactive)"
+	@echo "  reset-dry     Preview what 'make reset' would delete (dry-run)"
 	@echo "  deploy        Install systemd services on this host"
 	@echo "  status        Show systemd service / timer status"
 	@echo "  logs          Last 50 lines from daily pipeline journal"
@@ -81,6 +83,12 @@ test-dashboard:
 
 paper-reset:
 	$(PYTHON) -c "from paper_trading.simulator import reset_portfolio; reset_portfolio(confirm=True)"
+
+reset:
+	$(PYTHON) scripts/reset.py --all
+
+reset-dry:
+	$(PYTHON) scripts/reset.py --all --dry-run
 
 deploy:
 	bash deploy/install.sh

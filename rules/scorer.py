@@ -100,7 +100,8 @@ def _compute_vcp_score(vcp_metrics: VCPMetrics) -> float:
       Bonus is capped at 40.
 
     Unqualified VCP:
-      max(0, contraction_count × 15) — partial credit for early-stage basing.
+      min(45, max(0, contraction_count × 15)) — partial credit for early-stage basing,
+      capped at 45 so it always falls below the valid-VCP floor of 60.
     """
     if vcp_metrics.is_valid_vcp:
         contraction_bonus = (3 - abs(vcp_metrics.contraction_count - 3)) * 10
@@ -114,7 +115,12 @@ def _compute_vcp_score(vcp_metrics: VCPMetrics) -> float:
         bonus = min(40, contraction_bonus + vol_bonus)
         return 60.0 + bonus
     else:
-        return max(0.0, float(vcp_metrics.contraction_count) * 15.0)
+        # Partial credit for early-stage basing — capped at 45 (= 3 contractions × 15)
+        # to ensure non-qualifying VCP always scores below the valid-VCP floor of 60.
+        # Without this cap, a stock with many detected legs (e.g. 7 × 15 = 105) inflates
+        # the weighted total past 100, causing min(100, ...) to collapse all Stage-2
+        # scores to exactly 100 — making intermediate scores impossible.
+        return min(45.0, max(0.0, float(vcp_metrics.contraction_count) * 15.0))
 
 
 def _compute_volume_score(row: pd.Series, breakout_triggered: bool) -> float:
@@ -350,6 +356,41 @@ def score_symbol(
     fundamental_pass = _fund_result.passes if _fund_result is not None else False
     fundamental_details = dict(vars(_fund_result)) if _fund_result is not None else {}
 
+    # Build trend_template_details as the boolean-conditions dict that
+    # TrendTemplateSchema expects (condition_1..condition_8).
+    # BUG FIX: tt_result.details holds raw *numeric* values (close, sma_50…)
+    # and must NOT be stored here — it caused all conditions to default False
+    # when Pydantic validated against TrendTemplateSchema.
+    tt_details_dict: dict[str, Any] = {
+        "passes":         tt_result.passes,
+        "conditions_met": tt_result.conditions_met,
+        "condition_1":    tt_result.condition_1,
+        "condition_2":    tt_result.condition_2,
+        "condition_3":    tt_result.condition_3,
+        "condition_4":    tt_result.condition_4,
+        "condition_5":    tt_result.condition_5,
+        "condition_6":    tt_result.condition_6,
+        "condition_7":    tt_result.condition_7,
+        "condition_8":    tt_result.condition_8,
+    }
+
+    # Build vcp_details as the VCPSchema-compatible metrics dict.
+    # BUG FIX: vcp_details returned by qualify_vcp() is a rule-pass/fail dict
+    # (contraction_count_min, declining_depth…) and must NOT be stored here
+    # — it caused every VCP metric to show "—" in the frontend VCPCard.
+    def _nan_to_none(v: float) -> float | None:
+        return None if math.isnan(v) else v
+
+    vcp_details_dict: dict[str, Any] = {
+        "qualified":             vcp_qualified,
+        "contraction_count":     vcp_metrics.contraction_count,
+        "max_depth_pct":         _nan_to_none(vcp_metrics.max_depth_pct),
+        "final_depth_pct":       _nan_to_none(vcp_metrics.final_depth_pct),
+        "vol_contraction_ratio": _nan_to_none(vcp_metrics.vol_contraction_ratio),
+        "base_length_weeks":     vcp_metrics.base_length_weeks,
+        "tightness_score":       _nan_to_none(vcp_metrics.tightness_score),
+    }
+
     return SEPAResult(
         symbol=symbol,
         run_date=run_date,
@@ -357,12 +398,12 @@ def score_symbol(
         stage_label=stage_result.label,
         stage_confidence=stage_result.confidence,
         trend_template_pass=tt_result.passes,
-        trend_template_details=tt_result.details,
+        trend_template_details=tt_details_dict,
         conditions_met=tt_result.conditions_met,
         fundamental_pass=fundamental_pass,
         fundamental_details=fundamental_details,
         vcp_qualified=vcp_qualified,
-        vcp_details=vcp_details,
+        vcp_details=vcp_details_dict,
         breakout_triggered=breakout_triggered,
         entry_price=entry_price,
         stop_loss=stop_loss,

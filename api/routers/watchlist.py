@@ -50,14 +50,35 @@ _SUPPORTED_UPLOAD_SUFFIXES = {".csv", ".json", ".xlsx", ".xls", ".txt"}
 def _get_enriched_watchlist(
     db: SQLiteStore, sort: str = "score", limit: int = 100
 ) -> list[dict[str, Any]]:
-    """Return watchlist rows sorted by last_score or symbol name."""
-    rows = db.get_watchlist()
+    """Return watchlist rows enriched with the latest score from screen_results."""
+    conn = db._connect()
+    try:
+        rows = conn.execute(
+            """
+            SELECT
+                w.id, w.symbol, w.note, w.added_at, w.added_via,
+                COALESCE(w.last_score,   sr.score)         AS last_score,
+                COALESCE(w.last_quality, sr.setup_quality) AS last_quality,
+                COALESCE(w.last_run_at,  sr.run_date)      AS last_run_at
+            FROM watchlist w
+            LEFT JOIN (
+                SELECT symbol, score, setup_quality, run_date
+                FROM   screen_results
+                WHERE  (symbol, run_date) IN (
+                    SELECT symbol, MAX(run_date) FROM screen_results GROUP BY symbol
+                )
+            ) sr ON sr.symbol = w.symbol
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+
+    result = [dict(r) for r in rows]
     if sort == "score":
-        rows.sort(key=lambda r: (r.get("last_score") or 0), reverse=True)
+        result.sort(key=lambda r: (r.get("last_score") or 0), reverse=True)
     elif sort == "symbol":
-        rows.sort(key=lambda r: r.get("symbol", ""))
-    # else: keep DB order (added_at DESC)
-    return rows[:limit]
+        result.sort(key=lambda r: r.get("symbol", ""))
+    return result[:limit]
 
 
 # ---------------------------------------------------------------------------

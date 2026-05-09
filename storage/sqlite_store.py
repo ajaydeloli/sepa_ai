@@ -220,7 +220,9 @@ class SQLiteStore:
             "entry_price": result_dict.get("entry_price"),
             "stop_loss": result_dict.get("stop_loss"),
             "risk_pct": result_dict.get("risk_pct"),
-            "result_json": json.dumps(result_dict),
+            # Use the pre-built full-SEPAResult JSON when available (set by
+            # persist_results), otherwise fall back to serialising result_dict.
+            "result_json": result_dict.get("result_json") or json.dumps(result_dict, default=str),
         }
         with self._connect() as conn:
             conn.execute(sql, params)

@@ -122,11 +122,15 @@ export const api = {
   getMeta: () => apiFetch<Record<string, unknown>>("/api/v1/meta"),
 
   /**
-   * Trigger a manual pipeline run.
+   * Trigger a manual pipeline run (full scoring pipeline).
    * scope: "all" | "watchlist" | "universe"
+   *
+   * NOTE: Uses /api/v1/watchlist/run — NOT /api/v1/run.
+   * /api/v1/run is a Phase-1 skeleton that only does OHLCV ingestion.
+   * /api/v1/watchlist/run runs the full pipeline/runner.run_daily() with scoring.
    */
   triggerRun: (scope: "all" | "watchlist" | "universe") =>
-    apiFetch("/api/v1/run", {
+    apiFetch("/api/v1/watchlist/run", {
       method: "POST",
       body: JSON.stringify({ scope }),
     }),

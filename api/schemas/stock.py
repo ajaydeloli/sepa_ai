@@ -15,13 +15,13 @@ SEPAResult.run_date is a datetime.date object; StockResultSchema.run_date
 accepts both date objects and ISO-8601 strings via a field validator so
 dataclasses.asdict() output round-trips without manual conversion.
 
-SEPAResult.trend_template_details stores the numeric TrendTemplateResult
-.details dict (close, sma_150 …), whereas TrendTemplateSchema carries
-the boolean conditions.  When constructing StockResultSchema from a raw
-SEPAResult the caller should populate trend_template_details from the
-original TrendTemplateResult, not from the stored numeric details dict.
-Similarly vcp_details should come from VCPMetrics, not from qualify_vcp's
-bool details.  Both fields default to None so omitting them is safe.
+SEPAResult.trend_template_details must store the boolean-condition dict
+{passes, conditions_met, condition_1…condition_8} produced by scorer.py —
+NOT tt_result.details (the raw numeric values dict).  The old numeric dict
+caused all condition_* fields to default to False in TrendTemplateSchema.
+Similarly, vcp_details must store the VCPMetrics-derived dict
+{qualified, contraction_count, max_depth_pct…} — NOT qualify_vcp()'s
+rule-pass/fail dict.  Both fields default to None so omitting them is safe.
 """
 
 from __future__ import annotations
@@ -39,22 +39,22 @@ from pydantic import BaseModel, field_validator
 class TrendTemplateSchema(BaseModel):
     """Boolean verdict for each of Minervini's 8 Trend Template conditions."""
 
-    passes: bool
-    conditions_met: int
-    condition_1: bool   # price > SMA_150 AND price > SMA_200
-    condition_2: bool   # SMA_150 > SMA_200
-    condition_3: bool   # SMA_200 slope > 0
-    condition_4: bool   # SMA_50 > SMA_150 AND SMA_50 > SMA_200
-    condition_5: bool   # price > SMA_50
-    condition_6: bool   # price >= N% above 52-week low
-    condition_7: bool   # price within N% of 52-week high
-    condition_8: bool   # RS Rating >= threshold
+    passes: bool = False
+    conditions_met: int = 0
+    condition_1: bool = False   # price > SMA_150 AND price > SMA_200
+    condition_2: bool = False   # SMA_150 > SMA_200
+    condition_3: bool = False   # SMA_200 slope > 0
+    condition_4: bool = False   # SMA_50 > SMA_150 AND SMA_50 > SMA_200
+    condition_5: bool = False   # price > SMA_50
+    condition_6: bool = False   # price >= N% above 52-week low
+    condition_7: bool = False   # price within N% of 52-week high
+    condition_8: bool = False   # RS Rating >= threshold
 
 
 class VCPSchema(BaseModel):
     """Key VCP metrics surfaced to API consumers."""
 
-    qualified: bool
+    qualified: bool = False
     contraction_count: int | None = None
     max_depth_pct: float | None = None
     final_depth_pct: float | None = None
@@ -80,10 +80,10 @@ class StockResultSchema(BaseModel):
     score: int
     setup_quality: Literal["A+", "A", "B", "C", "FAIL"]
     stage: int
-    stage_label: str
-    stage_confidence: int
+    stage_label: str = ""          # safe default — absent from legacy rows
+    stage_confidence: int = 0      # safe default — absent from legacy rows
     trend_template_pass: bool
-    conditions_met: int
+    conditions_met: int = 0        # safe default — absent from legacy rows
     vcp_qualified: bool
     breakout_triggered: bool
     entry_price: float | None = None

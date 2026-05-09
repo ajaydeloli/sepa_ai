@@ -47,9 +47,12 @@ _QUALITY_ORDER: dict[str, int] = {
 def _parse_row(row: dict[str, Any]) -> StockResultSchema:
     """Build a StockResultSchema from a screen_results db row.
 
-    The ``result_json`` column stores the full SEPAResult as JSON (written by
-    screener/results.py::persist_results).  We load that first, then overlay
-    the flat columns which are more authoritative for indexed fields.
+    The ``result_json`` column stores either:
+      (a) the full SEPAResult dict as JSON  (correct — written by fixed code), or
+      (b) a shallow row_dict whose own ``result_json`` key holds the full JSON
+          as a nested string  (legacy — written by the double-encode bug).
+
+    We handle both cases so that already-stored rows still deserialise cleanly.
     """
     raw: dict[str, Any] = {}
     result_json = row.get("result_json")
@@ -58,6 +61,19 @@ def _parse_row(row: dict[str, Any]) -> StockResultSchema:
             raw = json.loads(result_json)
         except (json.JSONDecodeError, TypeError):
             raw = {}
+
+    # Legacy double-encode: raw itself has a "result_json" string key that
+    # contains the actual full SEPAResult JSON — parse and merge it in.
+    nested_json = raw.get("result_json")
+    if isinstance(nested_json, str):
+        try:
+            nested = json.loads(nested_json)
+            # Merge richer nested fields without overwriting already-present values
+            for k, v in nested.items():
+                if k != "result_json" and (k not in raw or raw[k] is None):
+                    raw[k] = v
+        except (json.JSONDecodeError, TypeError):
+            pass
 
     # Flat columns override JSON for core indexed fields
     for key in (
@@ -68,6 +84,22 @@ def _parse_row(row: dict[str, Any]) -> StockResultSchema:
         val = row.get(key)
         if val is not None:
             raw[key] = val
+
+    # ── Legacy-data guard ──────────────────────────────────────────────
+    # Pre-fix rows stored the wrong dicts here; null them so the frontend
+    # shows "No detail data" rather than all conditions defaulting to False.
+    #
+    # trend_template_details was set to tt_result.details (numeric values
+    # like close/sma_50) instead of the boolean condition_1…condition_8 dict.
+    tt_det = raw.get("trend_template_details")
+    if isinstance(tt_det, dict) and "condition_1" not in tt_det:
+        raw["trend_template_details"] = None
+
+    # vcp_details was set to qualify_vcp()'s rule-pass dict
+    # (contraction_count_min, declining_depth…) instead of VCP metrics.
+    vcp_det = raw.get("vcp_details")
+    if isinstance(vcp_det, dict) and "qualified" not in vcp_det:
+        raw["vcp_details"] = None
 
     return StockResultSchema.model_validate(raw)
 

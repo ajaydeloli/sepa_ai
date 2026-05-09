@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends
 
 from api.deps import get_db
+from api.schemas.common import APIResponse
 from storage.sqlite_store import SQLiteStore
 
 router = APIRouter(prefix="/api/v1")
@@ -86,7 +87,7 @@ def _uptime_days(first_run_ts: str | None) -> float:
 
 
 @router.get("/health")
-async def health_check(db: SQLiteStore = Depends(get_db)) -> dict:
+async def health_check(db: SQLiteStore = Depends(get_db)) -> APIResponse[dict]:
     """Liveness probe — always returns HTTP 200 with last-run metadata."""
     run = _query_last_run(db)
 
@@ -94,7 +95,6 @@ async def health_check(db: SQLiteStore = Depends(get_db)) -> dict:
     last_run_status: str | None = None
 
     if run:
-        # run_date is a DATE column; coerce to ISO string
         last_run = str(run["run_date"])
         raw_status = (run.get("status") or "").lower()
         if raw_status == "success":
@@ -104,12 +104,15 @@ async def health_check(db: SQLiteStore = Depends(get_db)) -> dict:
         else:
             last_run_status = raw_status or None
 
-    return {
-        "status": "ok",
-        "last_run": last_run,
-        "last_run_status": last_run_status,
-        "version": _VERSION,
-    }
+    return APIResponse(
+        success=True,
+        data={
+            "status": "ok",
+            "last_run": last_run,
+            "last_run_status": last_run_status,
+            "version": _VERSION,
+        },
+    )
 
 
 @router.get("/meta")

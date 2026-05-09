@@ -394,6 +394,7 @@ def run_daily(ctx: RunContext) -> dict:
             benchmark_df=benchmark_df,
             fundamentals_map=fundamentals_map,
             news_scores=news_scores_map,
+            force_symbols=watchlist_symbols,   # always score watchlist symbols
         )
 
         rep = get_report_summary(results)

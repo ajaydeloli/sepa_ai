@@ -1,7 +1,7 @@
 # BUILD_STATUS.md
 # Minervini SEPA Stock Analysis System — Build Status
 
-> **Last Updated:** 2026-05-08 (Phases 9–11 complete, Phase 12 started)
+> **Last Updated:** 2026-05-09 (Phases 9–11 complete, Phase 12 ~80% done)
 > **Version:** 1.1.0
 > **Reference Design:** PROJECT_DESIGN.md v1.4.0
 > **Python:** 3.11 | **Test Suite:** 896 tests, 895 passing, 1 failing
@@ -23,9 +23,9 @@
 | **Phase 9** | Hardening & Production | ✅ **COMPLETE** | 100% |
 | **Phase 10** | API Layer (FastAPI) | ✅ **COMPLETE** | 100% |
 | **Phase 11** | Streamlit Dashboard MVP | ✅ **COMPLETE** | 100% |
-| **Phase 12** | Next.js Production Frontend | 🚧 **IN PROGRESS** | ~40% |
+| **Phase 12** | Next.js Production Frontend | 🚧 **IN PROGRESS** | ~80% |
 
-**Overall Project Completion: ~92%**
+**Overall Project Completion: ~97%**
 
 **Known gap:** Prometheus metrics endpoint was deprioritised in Phase 9.  
 **Known test failure:** `tests/integration/test_api_e2e.py::test_full_api_flow` — portfolio endpoint returns `200` where test expects `404` (minor E2E expectation mismatch, tracked).
@@ -383,34 +383,43 @@
 
 ---
 
-## Phase 12 — Next.js Production Frontend (Weeks 32–36) 🚧 IN PROGRESS (~40%)
+## Phase 12 — Next.js Production Frontend (Weeks 32–36) 🚧 IN PROGRESS (~80%)
 
 **Goal:** Shareable, mobile-friendly web app backed by the FastAPI layer.
 
-> **Note:** Next.js 14 scaffold created with App Router. Type-safe API client, shared types, and core components implemented. Not yet connected to production API. Untracked in git.
+> **Note:** Filesystem inspection on 2026-05-09 confirms significantly more work is done than the
+> previous ~40% estimate. The stock deep-dive page and portfolio page are fully implemented with
+> complete data wiring. Remaining gaps are VCP zone overlays and Vercel production deployment.
 
 | Task | Status | File/Notes |
 |------|--------|------------|
 | `frontend/` — Next.js 14 project scaffold (App Router) | ✅ | `next.config.ts`, `package.json`, `tailwind.config.ts`, `tsconfig.json` |
 | `frontend/lib/api.ts` — typed API client for all `/api/v1/*` endpoints | ✅ | 128 lines; SWR wrappers for GET; mutation helpers for POST/DELETE |
-| `frontend/lib/types.ts` — TypeScript types matching Pydantic schemas | ✅ | 167 lines; `StockResult`, `WatchlistEntry`, `PortfolioSummary`, `BacktestReport` |
-| Screener table page — sortable, filterable | ✅ | `app/screener/page.tsx` (105 lines) |
+| `frontend/lib/types.ts` — TypeScript types matching Pydantic schemas | ✅ | 167 lines; `StockResult`, `WatchlistEntry`, `PortfolioSummary`, `BacktestReport`, `OHLCVBar`, `MAPoint`, `StockHistoryPoint` |
+| Screener table page — sortable, filterable, live-polling via SWR | ✅ | `app/screener/page.tsx` — quality/limit filters, CSV export, SWR polling, `ApiOfflineBanner` |
 | Watchlist page | ✅ | `app/watchlist/page.tsx` (40 lines) |
-| Portfolio page | ✅ | `app/portfolio/page.tsx` (70 lines) |
+| Portfolio page — P&L cards + equity curve + open/closed tabs + stats | ✅ | `app/portfolio/page.tsx` — **fully wired**: `refreshInterval: 60_000`, equity curve (Recharts `AreaChart`), open positions table, closed trades table, Statistics tab (win-rate by quality, monthly P&L bars, hold-time distribution) |
+| Stock deep-dive page — chart + TT + VCP + fundamentals + AI brief + history | ✅ | `app/screener/[symbol]/page.tsx` — **fully implemented**: 2-column layout, SWR data wiring (`api.getStock`, `api.getStockHistory`, `api.getOHLCV`), 4-tab panel (Trend / VCP / Fundamentals / AI Brief), score breakdown bars, key stats, 90-day score history sparkline (Recharts), watchlist toggle |
 | `frontend/components/StockTable.tsx` — reusable table with quality badges | ✅ | 212 lines |
-| `frontend/components/CandlestickChart.tsx` — TradingView lightweight-charts | ✅ | 104 lines |
+| `frontend/components/CandlestickChart.tsx` — TradingView lightweight-charts | ✅ | 104 lines; SMA50/150/200 overlays, entry + stop price lines |
 | `frontend/components/TrendTemplateCard.tsx` — 8-condition checklist | ✅ | 58 lines |
 | `frontend/components/VCPCard.tsx` — VCP zone display | ✅ | 47 lines |
 | `frontend/components/ScoreGauge.tsx` — 0–100 radial gauge | ✅ | 109 lines |
 | `frontend/components/PortfolioSummary.tsx` — P&L cards + equity curve | ✅ | 122 lines |
 | `frontend/components/NavBar.tsx` — top navigation | ✅ | 122 lines |
-| Stock deep-dive page — full chart + TT + VCP + fundamentals | 🚧 | Partial — uses existing components, needs data wiring |
-| Mobile-responsive layout (Tailwind CSS) | ✅ | Configured in `tailwind.config.ts` |
-| VCP zone overlays on chart | ⏳ | Not yet implemented |
-| Score gauge widget (0–100 visual indicator) | ✅ | `frontend/components/ScoreGauge.tsx` complete |
-| Paper trading portfolio page — P&L cards + equity curve (Recharts) | 🚧 | Scaffold done; needs data binding |
-| Deploy to Vercel (free tier, automatic HTTPS) | ⏳ | Not yet done |
-| **Deliverable:** Public URL serves screener + charts + paper portfolio from any device | ⏳ | |
+| `frontend/components/QualityBadge.tsx` — setup quality badge | ✅ | Present on disk |
+| `frontend/components/ApiOfflineBanner.tsx` — API offline notice | ✅ | Present on disk |
+| `frontend/components/Skeleton.tsx` — loading skeleton components | ✅ | Present on disk |
+| Mobile-responsive layout (Tailwind CSS) | ✅ | Configured in `tailwind.config.ts`; responsive classes used throughout |
+| `vercel.json` — Vercel deployment config + API rewrite | 🚧 | File exists; API destination is placeholder `your-api-server:8000` — needs real server URL before deploy |
+| VCP zone overlays on `CandlestickChart.tsx` | ⏳ | Not yet implemented — `CandlestickChart` only has SMA lines + entry/stop price lines; no shaded contraction zones |
+| Deploy to Vercel (free tier, automatic HTTPS) | ⏳ | `vercel.json` in place; blocked by placeholder API URL in rewrite rule |
+| **Deliverable:** Public URL serves screener + charts + paper portfolio from any device | ⏳ | Blocked by Vercel deploy |
+
+**Remaining work (3 items):**
+1. Update `vercel.json` rewrite destination to the real ShreeVault API URL (or reverse-proxy/tunnel)
+2. Implement VCP contraction zone overlays in `CandlestickChart.tsx` (shaded rectangles for each base leg)
+3. Deploy to Vercel — `vercel --prod` from `frontend/` directory
 
 **Blockers:** Phase 10 API (all endpoints) ✅ + Phase 11 Streamlit MVP validation ✅.
 
@@ -532,24 +541,33 @@ dashboard/                   ✅  (Phase 11 — 2,646 lines, 11 tests)
     tables.py                ✅ Styled screener tables with quality badges
     metrics.py               ✅ Score card widgets, regime chips, P&L cards
 
-frontend/                    🚧  (Phase 12 — ~1,395 lines, in progress)
+frontend/                    🚧  (Phase 12 — ~80% done, filesystem-verified 2026-05-09)
   app/
     layout.tsx               ✅ Root layout with Tailwind + Providers
     page.tsx                 ✅ Dashboard home
-    screener/page.tsx        ✅ Screener table page
+    screener/page.tsx        ✅ Screener table page (sortable/filterable/CSV export/SWR polling)
+    screener/[symbol]/page.tsx ✅ Stock deep-dive — FULLY WIRED (2-col layout, 4 tabs,
+                                    SWR data fetching, score bars, key stats, 90-day history chart)
     watchlist/page.tsx       ✅ Watchlist page
-    portfolio/page.tsx       ✅ Portfolio page
+    portfolio/page.tsx       ✅ Portfolio page — FULLY WIRED (equity curve, open/closed/stats tabs,
+                                    refreshInterval:60_000, win-rate by quality, monthly P&L bars,
+                                    hold-time distribution)
   components/
     StockTable.tsx           ✅ Reusable sortable/filterable table
-    CandlestickChart.tsx     ✅ TradingView lightweight-charts
+    CandlestickChart.tsx     ✅ TradingView lightweight-charts; SMA50/150/200 + entry/stop lines
+                                ⏳ VCP contraction zone overlays NOT YET implemented
     TrendTemplateCard.tsx    ✅ 8-condition checklist
     VCPCard.tsx              ✅ VCP zone display
     ScoreGauge.tsx           ✅ 0–100 radial gauge
     PortfolioSummary.tsx     ✅ P&L cards + equity curve
     NavBar.tsx               ✅ Top navigation
+    QualityBadge.tsx         ✅ Setup quality badge
+    ApiOfflineBanner.tsx     ✅ API offline notice
+    Skeleton.tsx             ✅ Loading skeleton components
   lib/
     api.ts                   ✅ Typed API client (SWR wrappers, mutations)
-    types.ts                 ✅ TypeScript types matching Pydantic schemas
+    types.ts                 ✅ TypeScript types (OHLCVBar, MAPoint, StockHistoryPoint added)
+  vercel.json                🚧 Config present; API rewrite destination is placeholder URL
 
 storage/
   parquet_store.py           ✅ Atomic append (temp + rename)
@@ -642,20 +660,24 @@ docs/                        ✅
 **Phase 9 is 100% complete** ✅  
 **Phase 10 is 100% complete** ✅  
 **Phase 11 is 100% complete** ✅  
+**Phase 12 is ~80% complete** 🚧 — 3 items remaining (filesystem-verified 2026-05-09)
 
-**Current major build work is Phase 12 (Next.js):**
+**What was completed since last update (was reported as ~40%):**
+- Stock deep-dive page (`app/screener/[symbol]/page.tsx`) — fully implemented and data-wired. Has 2-column layout, SWR fetching for stock/history/OHLCV, 4 content tabs (Trend Template, VCP, Fundamentals, AI Brief), score breakdown progress bars, key stats panel, 90-day score trend chart (Recharts), and watchlist toggle.
+- Portfolio page (`app/portfolio/page.tsx`) — fully implemented with `refreshInterval: 60_000`, equity curve (Recharts `AreaChart` with gradient fill), open positions table, closed trades table, and Statistics tab (win-rate by quality, monthly P&L bar chart, hold-time distribution histogram).
+- Additional components: `QualityBadge.tsx`, `ApiOfflineBanner.tsx`, `Skeleton.tsx`.
+- `lib/types.ts` extended with `OHLCVBar`, `MAPoint`, `StockHistoryPoint`.
 
-1. Fix `tests/integration/test_api_e2e.py::test_full_api_flow` — align portfolio endpoint 404 expectations (or fix API to return 404)
-2. Wire frontend components to live FastAPI endpoints instead of mock data
-3. Implement stock deep-dive page (`[symbol]/page.tsx`) with full chart + fundamentals
-4. Add VCP zone overlays to `CandlestickChart.tsx`
-5. Implement paper trading equity curve with Recharts
-6. Add CI step for `npm run build` / `npm run lint` (if dev container has Node)
-7. Deploy to Vercel (Phase 12 final deliverable)
+**Remaining work (3 items to complete Phase 12):**
+1. **VCP contraction zone overlays** in `CandlestickChart.tsx` — add shaded rectangular regions for each VCP base leg using lightweight-charts price band series or custom SVG overlay
+2. **Update `vercel.json`** rewrite destination from placeholder `your-api-server:8000` to real ShreeVault API URL (or Cloudflare Tunnel / ngrok URL)
+3. **Deploy to Vercel** — run `vercel --prod` from `frontend/` after resolving the API URL; automatic HTTPS + public URL
 
 **Phase 9 known gap:** Prometheus metrics endpoint deprioritised — can be added in a follow-up if observability becomes critical.
 
+**Known test failure:** `tests/integration/test_api_e2e.py::test_full_api_flow` — portfolio endpoint returns `200` where test expects `404` (minor E2E expectation mismatch, tracked).
+
 ---
 
-*This document is maintained in sync with PROJECT_DESIGN.md v1.4.0 + filesystem inspection.*
-*Last updated: 2026-05-08*
+*This document is maintained in sync with PROJECT_DESIGN.md v1.4.0 + filesystem inspection.*  
+*Last updated: 2026-05-09 — Phase 12 re-verified by reading actual files on disk*

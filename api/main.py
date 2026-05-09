@@ -29,7 +29,7 @@ from slowapi.errors import RateLimitExceeded
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from api.rate_limit import limiter
-from api.routers import health, portfolio, stocks, watchlist
+from api.routers import health, portfolio, run, stocks, watchlist
 
 logger = logging.getLogger("api")
 
@@ -120,6 +120,7 @@ app.include_router(health.router)
 app.include_router(stocks.router)
 app.include_router(watchlist.router)
 app.include_router(portfolio.router)
+app.include_router(run.router)
 
 # ---------------------------------------------------------------------------
 # Custom exception handlers — always return APIResponse envelope

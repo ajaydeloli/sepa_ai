@@ -5,7 +5,7 @@
  */
 "use client";
 
-import { use, useState } from "react";
+import { useState } from "react";
 import useSWR from "swr";
 import Link from "next/link";
 import { ArrowLeft, Bookmark, BookmarkCheck, Star } from "lucide-react";
@@ -199,12 +199,12 @@ function TabContent({ tab, stock }: { tab: Tab; stock: StockResult }) {
 export default function StockDetailPage({
   params,
 }: {
-  params: Promise<{ symbol: string }>;
+  params: { symbol: string };
 }) {
-  const { symbol } = use(params);
+  const { symbol } = params;
   const [activeTab, setActiveTab] = useState<Tab>("trend");
 
-  const { data: stockData, mutate } = useSWR(
+  const { data: stockData, error: stockError, mutate } = useSWR(
     ["stock", symbol],
     () => api.getStock(symbol),
   );
@@ -220,6 +220,20 @@ export default function StockDetailPage({
   const stock   = stockData?.data;
   const history = histData?.data?.history ?? [];
   const ohlcv   = ohlcvData?.data;
+
+  if (stockError) {
+    return (
+      <div className="flex flex-col items-center justify-center py-24 gap-3 text-center">
+        <p className="text-red-400 font-semibold text-sm">Failed to load {symbol}</p>
+        <p className="text-slate-500 text-xs max-w-xs">
+          {stockError?.message ?? "No screening result found. Run the pipeline first."}
+        </p>
+        <Link href="/watchlist" className="text-xs text-blue-400 hover:underline">
+          ← Back to Watchlist
+        </Link>
+      </div>
+    );
+  }
 
   const toggleWatchlist = async () => {
     if (!stock) return;
