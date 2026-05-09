@@ -267,7 +267,7 @@ def load_watchlist_file(path: Path) -> list[str]:
 
 def resolve_symbols(
     config: object,
-    db,  # SQLiteStore — typed loosely to avoid circular imports
+    db=None,  # SQLiteStore — typed loosely to avoid circular imports; optional for backtest/CLI callers
     cli_watchlist_file: Path | None = None,
     cli_symbols: list[str] | None = None,
     scope: str = "all",

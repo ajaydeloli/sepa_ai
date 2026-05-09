@@ -1,4 +1,4 @@
-.PHONY: install test test-coverage test-smoke test-integration lint format daily bootstrap watchlist-only backtest rebuild api dashboard dashboard-dev test-dashboard paper-reset deploy status logs logs-api help
+.PHONY: install test test-coverage test-smoke test-integration lint format daily bootstrap watchlist-only backtest rebuild api dashboard dashboard-dev test-dashboard paper-reset deploy status logs logs-api frontend-dev frontend-build frontend-deploy help
 
 PYTHON := .venv/bin/python
 PIP    := .venv/bin/pip
@@ -26,6 +26,9 @@ help:
 	@echo "  status        Show systemd service / timer status"
 	@echo "  logs          Last 50 lines from daily pipeline journal"
 	@echo "  logs-api      Last 50 lines from API service journal"
+	@echo "  frontend-dev    Start Next.js dev server (localhost:3000)"
+	@echo "  frontend-build  Production build of Next.js frontend"
+	@echo "  frontend-deploy Deploy frontend to Vercel (requires vercel CLI)"
 
 install:
 	pip install -e ".[dev]"
@@ -90,3 +93,12 @@ logs:
 
 logs-api:
 	journalctl -u minervini-api.service -n 50 --no-pager
+
+frontend-dev:
+	cd frontend && npm run dev
+
+frontend-build:
+	cd frontend && npm run build
+
+frontend-deploy:
+	cd frontend && npx vercel --prod

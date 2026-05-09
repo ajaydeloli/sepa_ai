@@ -25,7 +25,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from api.auth import require_read_key
 from api.deps import get_db, get_run_date
 from api.schemas.common import APIResponse
-from api.schemas.stock import StockHistorySchema, StockResultSchema
+from api.schemas.stock import StockHistorySchema, StockResultSchema, OHLCVResponseSchema
 from storage.sqlite_store import SQLiteStore
 
 router = APIRouter(
@@ -206,3 +206,69 @@ async def get_stock_history(
 
     schema = StockHistorySchema(symbol=symbol.upper(), history=history)
     return APIResponse(success=True, data=schema)
+
+
+@router.get("/{symbol}/ohlcv", response_model=APIResponse[OHLCVResponseSchema])
+async def get_stock_ohlcv(
+    symbol: str,
+    days: int = 90,
+) -> APIResponse[OHLCVResponseSchema]:
+    """Last *days* of OHLCV bars + SMA50/150/200 from the feature Parquet.
+
+    Resolution order:
+      1. data/features/{symbol}.parquet  — has OHLCV + MA columns
+      2. data/processed/{symbol}.parquet — OHLCV only; MA series will be null
+    Returns 404 only when neither file exists / both are empty.
+    """
+    from pathlib import Path
+    import pandas as pd
+    from storage.parquet_store import read_parquet
+
+    sym = symbol.upper()
+    feature_path   = Path("data/features")  / f"{sym}.parquet"
+    processed_path = Path("data/processed") / f"{sym}.parquet"
+
+    df = read_parquet(feature_path)
+    if df.empty:
+        df = read_parquet(processed_path)
+
+    if df.empty:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No OHLCV data found for '{sym}'.",
+        )
+
+    df = df.tail(days)
+
+    def _date_str(idx: object) -> str:
+        if hasattr(idx, "date"):
+            return str(idx.date())  # type: ignore[union-attr]
+        return str(idx)
+
+    ohlcv = [
+        {
+            "time":  _date_str(idx),
+            "open":  float(row["open"]),
+            "high":  float(row["high"]),
+            "low":   float(row["low"]),
+            "close": float(row["close"]),
+        }
+        for idx, row in df.iterrows()
+    ]
+
+    def _ma_series(col: str) -> list[dict] | None:
+        if col not in df.columns:
+            return None
+        return [
+            {"time": _date_str(idx), "value": float(v)}
+            for idx, v in df[col].dropna().items()
+        ]
+
+    data = OHLCVResponseSchema(
+        symbol=sym,
+        ohlcv=ohlcv,
+        sma50=_ma_series("sma_50"),
+        sma150=_ma_series("sma_150"),
+        sma200=_ma_series("sma_200"),
+    )
+    return APIResponse(success=True, data=data)

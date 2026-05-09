@@ -98,7 +98,15 @@ def compute_rs_raw(
     log.debug("compute_rs_raw: rows=%d period=%d", n_rows, period)
 
     close_sym: pd.Series = symbol_df["close"]
-    close_bm: pd.Series = benchmark_df["close"]
+
+    # Align benchmark to symbol's DatetimeIndex using forward-fill so that
+    # any trading days present in the symbol but absent from the benchmark
+    # (e.g. today's intraday bar not yet in the index) get the last known value.
+    close_bm: pd.Series = (
+        benchmark_df["close"]
+        .reindex(close_sym.index)
+        .ffill()
+    )
 
     # Compute rolling rs_raw across the whole series so the column is fully
     # populated (useful for back-testing / feature store).

@@ -106,7 +106,8 @@ def _resolve_universe(universe_arg: str, config: dict) -> list[str]:
         override = dict(config)
         override.setdefault("universe", {})["index"] = universe_lower
         try:
-            symbols = resolve_symbols(override)
+            run_syms = resolve_symbols(override, db=None, scope="universe")
+            symbols = run_syms.universe
             log.info("Resolved universe '%s': %d symbols", universe_arg, len(symbols))
             return symbols
         except Exception as exc:  # noqa: BLE001

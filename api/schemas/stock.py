@@ -121,3 +121,32 @@ class StockHistorySchema(BaseModel):
 
     symbol: str
     history: list[dict]     # [{run_date, score, quality, stage}, …]
+
+
+# ---------------------------------------------------------------------------
+# OHLCV schemas
+# ---------------------------------------------------------------------------
+
+
+class OHLCVBarSchema(BaseModel):
+    """Single OHLCV candlestick bar."""
+    time: str           # YYYY-MM-DD
+    open: float
+    high: float
+    low: float
+    close: float
+
+
+class MAPointSchema(BaseModel):
+    """Single moving-average data point."""
+    time: str           # YYYY-MM-DD
+    value: float
+
+
+class OHLCVResponseSchema(BaseModel):
+    """OHLCV bars + moving-average series for a symbol."""
+    symbol: str
+    ohlcv: list[OHLCVBarSchema]
+    sma50: list[MAPointSchema] | None = None
+    sma150: list[MAPointSchema] | None = None
+    sma200: list[MAPointSchema] | None = None
