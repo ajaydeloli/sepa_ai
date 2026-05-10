@@ -98,13 +98,26 @@ def compute_sector_ranks(
     return sector_ranks
 
 
-def get_sector_score_bonus(
+def get_sector_score(
     symbol: str,
     sector_ranks: dict[str, int],
     symbol_info: pd.DataFrame,
-    top_n: int = 5,
-) -> int:
-    """Return the sector score bonus for *symbol*.
+) -> float:
+    """Return a 0–100 sector strength score for *symbol*.
+
+    Replaces the legacy binary ``+5`` bonus with a continuous score that can
+    be used as a proper weighted component in the composite scorer.
+
+    Scoring formula (linear, rank-proportional):
+      score = 100 × (1 − (rank − 1) / max(1, total_sectors − 1))
+
+    This means:
+      • Rank 1  (strongest sector) → 100.0
+      • Rank N  (weakest sector)   → 0.0
+      • Intermediate ranks         → linear interpolation
+
+    Returns 50.0 (neutral) when the symbol or its sector is not found, so
+    an unknown sector neither helps nor hurts a stock's composite score.
 
     Parameters
     ----------
@@ -114,46 +127,51 @@ def get_sector_score_bonus(
         Output of :func:`compute_sector_ranks`.
     symbol_info:
         DataFrame with at least ``symbol`` and ``sector`` columns.
-    top_n:
-        Number of top-ranked sectors that qualify for the bonus.
-        Default is 5.
 
     Returns
     -------
-    int
-        ``+5`` if the symbol's sector is within the top *top_n* sectors,
-        ``0`` otherwise (including when the symbol is not found in
-        *symbol_info* or has no sector rank).
+    float
+        Sector strength score in the range [0.0, 100.0].
     """
     _validate_symbol_info(symbol_info)
 
-    # Look up the symbol's sector
-    row = symbol_info.loc[symbol_info["symbol"] == symbol, "sector"]
-    if row.empty:
-        log.debug("get_sector_score_bonus: symbol %r not found in symbol_info", symbol)
-        return 0
+    sym_row = symbol_info.loc[symbol_info["symbol"] == symbol, "sector"]
+    if sym_row.empty:
+        log.debug("get_sector_score: symbol %r not found in symbol_info — returning neutral 50", symbol)
+        return 50.0
 
-    sector: str = row.iloc[0]
+    sector: str = sym_row.iloc[0]
     rank = sector_ranks.get(sector)
 
     if rank is None:
         log.debug(
-            "get_sector_score_bonus: sector %r for symbol %r not in sector_ranks",
-            sector,
-            symbol,
+            "get_sector_score: sector %r for symbol %r not in sector_ranks — returning neutral 50",
+            sector, symbol,
         )
-        return 0
+        return 50.0
 
-    bonus = 5 if rank <= top_n else 0
+    total_sectors = max(sector_ranks.values()) if sector_ranks else 1
+    score = max(0.0, 100.0 * (1.0 - (rank - 1) / max(1, total_sectors - 1)))
+
     log.debug(
-        "get_sector_score_bonus: symbol=%r sector=%r rank=%d top_n=%d bonus=%d",
-        symbol,
-        sector,
-        rank,
-        top_n,
-        bonus,
+        "get_sector_score: symbol=%r sector=%r rank=%d/%d score=%.1f",
+        symbol, sector, rank, total_sectors, score,
     )
-    return bonus
+    return score
+
+
+def get_sector_score_bonus(
+    symbol: str,
+    sector_ranks: dict[str, int],
+    symbol_info: pd.DataFrame,
+    top_n: int = 5,
+) -> int:
+    """Legacy helper — kept for backward compatibility only.
+
+    New code should use :func:`get_sector_score` instead.
+    Always returns 0 now that sector strength is a full weighted component.
+    """
+    return 0
 
 
 # ---------------------------------------------------------------------------

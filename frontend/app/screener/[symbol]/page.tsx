@@ -34,49 +34,75 @@ const TABS: { id: Tab; label: string }[] = [
   { id: "llm",          label: "AI Brief" },
 ];
 // ---------------------------------------------------------------------------
-// Score breakdown config — mirrors backend SCORE_WEIGHTS in rules/scorer.py
-// rs_rating=30, trend=25, vcp=22, volume=10, fundamental=7, news=6
+// Score breakdown config
 // ---------------------------------------------------------------------------
 interface ScoreRow { label: string; value: number; max: number; color: string }
 
+const COMPONENT_META: Record<string, { label: string; color: string }> = {
+  rs_rating:   { label: "RS Rating",        color: "bg-yellow-500" },
+  trend:       { label: "Trend Template",   color: "bg-blue-500"   },
+  vcp:         { label: "VCP Pattern",      color: "bg-purple-500" },
+  volume:      { label: "Volume",           color: "bg-green-500"  },
+  fundamental: { label: "Fundamentals",     color: "bg-teal-500"   },
+  sector:      { label: "Sector Strength",  color: "bg-cyan-500"   },
+  news:        { label: "News",             color: "bg-orange-400" },
+};
+
+// Canonical component order for display
+const COMPONENT_ORDER = ["rs_rating", "trend", "vcp", "volume", "fundamental", "sector", "news"];
+
+// Legacy fallback weights (matches SCORE_WEIGHTS in rules/scorer.py)
+const FALLBACK_WEIGHTS: Record<string, number> = {
+  rs_rating: 0.22, trend: 0.22, vcp: 0.18,
+  volume: 0.15, fundamental: 0.15, sector: 0.08, news: 0.00,
+};
+
 function scoreBreakdown(s: StockResult): ScoreRow[] {
-  // ── Trend Template (0–25): partial credit on conditions_met, not binary ──
-  const trendScore = Math.round((s.conditions_met / 8) * 25);
+  const weights    = (s.score_weights   && Object.keys(s.score_weights).length   > 0)
+    ? s.score_weights   : FALLBACK_WEIGHTS;
+  const components = (s.score_components && Object.keys(s.score_components).length > 0)
+    ? s.score_components : null;
 
-  // ── RS Rating (0–30) ──────────────────────────────────────────────────────
-  const rsScore = Math.round((s.rs_rating / 100) * 30);
+  if (components) {
+    // ── New path: backend-computed weighted contributions ─────────────────
+    // value = weighted contribution (0 → weight×100)
+    // max   = weight × 100
+    // Skip components with zero weight (disabled in settings.yaml)
+    return COMPONENT_ORDER
+      .map((key) => ({
+        label: COMPONENT_META[key]?.label ?? key,
+        value: Math.round(components[key] ?? 0),
+        max:   Math.round((weights[key] ?? 0) * 100),
+        color: COMPONENT_META[key]?.color ?? "bg-slate-500",
+      }))
+      .filter((row) => row.max > 0);
+  }
 
-  // ── VCP Pattern (0–22): approximated from qualify state + contraction count
-  //    Backend: qualified → 60-100 range; unqualified → min(45, cnt×15)
-  //    Contribution = vcp_raw / 100 × 22 ──────────────────────────────────
-  const cnt = s.vcp_details?.contraction_count ?? 0;
-  const vcpRaw = s.vcp_qualified ? 70 : Math.min(45, cnt * 15);
-  const vcpScore = Math.round((vcpRaw / 100) * 22);
-
-  // ── Volume (0–10): breakout_triggered is the best proxy we expose ────────
-  //    On a breakout the backend uses vol_ratio / 3 × 100; off breakout it
-  //    uses acc_dist.  We show 10 on breakout, neutral 5 otherwise.
-  const volScore = s.breakout_triggered ? 10 : 5;
-
-  // ── Fundamentals (0–7) ────────────────────────────────────────────────────
-  //    fundamental_score is 0–100 from FundamentalResult.score (conditions_met/7×100).
-  //    When fundamentals were not evaluated the backend used neutral 50, so the
-  //    API also returns 50 as the default — giving ~3.5 pts, which rounds to 4.
-  const fundScore = Math.round((s.fundamental_score / 100) * 7);
-
-  // ── News (0–6): (news_score+100)/2 × 0.06; absent → neutral 3 ───────────
-  const newsScore = s.news_score != null
-    ? Math.min(6, Math.round(((s.news_score + 100) / 2) * 0.06))
-    : 3;
+  // ── Legacy fallback: re-derive from available API fields ──────────────
+  const w = weights;
+  const trendScore = Math.round((s.conditions_met / 8) * w.trend * 100);
+  const rsScore    = Math.round((s.rs_rating / 100)    * w.rs_rating * 100);
+  const cnt        = s.vcp_details?.contraction_count ?? 0;
+  const vcpRaw     = s.vcp_qualified ? 70 : Math.min(45, cnt * 15);
+  const vcpScore   = Math.round((vcpRaw / 100)         * w.vcp * 100);
+  const volScore   = Math.round((s.breakout_triggered ? 100 : 50) * w.volume);
+  const fundScore  = Math.round((s.fundamental_score / 100)       * w.fundamental * 100);
+  const newsScore  = s.news_score != null
+    ? Math.min(
+        Math.round(w.news * 100),
+        Math.round(((s.news_score + 100) / 2) * w.news)
+      )
+    : Math.round(w.news * 50);
 
   return [
-    { label: "RS Rating",       value: rsScore,   max: 30, color: "bg-yellow-500" },
-    { label: "Trend Template",  value: trendScore, max: 25, color: "bg-blue-500"   },
-    { label: "VCP Pattern",     value: vcpScore,   max: 22, color: "bg-purple-500" },
-    { label: "Volume",          value: volScore,   max: 10, color: "bg-green-500"  },
-    { label: "Fundamentals",    value: fundScore,  max:  7, color: "bg-teal-500"   },
-    { label: "News",            value: newsScore,  max:  6, color: "bg-orange-400" },
-  ];
+    { label: "RS Rating",       value: rsScore,    max: Math.round(w.rs_rating   * 100), color: "bg-yellow-500" },
+    { label: "Trend Template",  value: trendScore,  max: Math.round(w.trend       * 100), color: "bg-blue-500"   },
+    { label: "VCP Pattern",     value: vcpScore,    max: Math.round(w.vcp         * 100), color: "bg-purple-500" },
+    { label: "Volume",          value: volScore,    max: Math.round(w.volume      * 100), color: "bg-green-500"  },
+    { label: "Fundamentals",    value: fundScore,   max: Math.round(w.fundamental * 100), color: "bg-teal-500"   },
+    { label: "Sector Strength", value: 0,           max: Math.round((w.sector ?? 0) * 100), color: "bg-cyan-500" },
+    { label: "News",            value: newsScore,   max: Math.round(w.news        * 100), color: "bg-orange-400" },
+  ].filter((row) => row.max > 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -97,7 +123,7 @@ function ScoreBreakdownPanel({ stock }: { stock: StockResult }) {
             <div className="h-1.5 bg-slate-800 rounded-full overflow-hidden">
               <div
                 className={`h-full rounded-full transition-all ${color}`}
-                style={{ width: `${(value / max) * 100}%` }}
+                style={{ width: `${max > 0 ? (value / max) * 100 : 0}%` }}
               />
             </div>
           </div>

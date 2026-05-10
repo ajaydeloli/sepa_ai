@@ -84,6 +84,18 @@ export interface StockResult {
   trend_template_details: TrendTemplate | null;
   vcp_details: VCPDetails | null;
   llm_brief: string | null;
+  /**
+   * Per-component weighted score contributions computed by the backend.
+   * Keys: rs_rating | trend | vcp | volume | fundamental | news
+   * Each value = raw_component_score × weight (unit: same as total score).
+   * Empty object for legacy rows scored before this field was added.
+   */
+  score_components: Record<string, number>;
+  /**
+   * Active scoring weights used for this run (mirrors config["scoring"]["weights"]).
+   * Keys same as score_components. Empty object for legacy rows.
+   */
+  score_weights: Record<string, number>;
 }
 
 export interface StockHistoryPoint {

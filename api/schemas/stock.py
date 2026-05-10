@@ -120,6 +120,12 @@ class StockResultSchema(BaseModel):
     trend_template_details: TrendTemplateSchema | None = None
     vcp_details: VCPSchema | None = None
     llm_brief: str | None = None    # Phase 6 optional
+    # Per-component weighted score contributions and active weights.
+    # Populated by score_symbol() for new runs; empty dicts for legacy rows.
+    # Frontend uses these to render the Score Breakdown card without hardcoding
+    # any weight or threshold values.
+    score_components: dict = {}   # e.g. {"rs_rating": 24.9, "trend": 25.0, …}
+    score_weights: dict = {}      # e.g. {"rs_rating": 0.30, "trend": 0.25, …}
 
     @field_validator("run_date", mode="before")
     @classmethod

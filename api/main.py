@@ -18,7 +18,14 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import AsyncIterator
+
+# Load .env into os.environ as early as possible so that all provider API-key
+# checks (NVIDIA_API_KEY, GROQ_API_KEY, ANTHROPIC_API_KEY, …) see the correct
+# values.  override=False means already-set shell env vars are not clobbered.
+from dotenv import load_dotenv
+load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=False)
 
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError

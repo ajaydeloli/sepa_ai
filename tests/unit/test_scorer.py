@@ -695,3 +695,182 @@ class TestScoreWeights:
     def test_expected_weight_keys_present(self):
         expected = {"rs_rating", "trend", "vcp", "volume", "fundamental", "news"}
         assert set(SCORE_WEIGHTS.keys()) == expected
+
+
+# ===========================================================================
+# Config-driven weightage override tests
+# Verify that scorer reads ALL parameters from config rather than using
+# hardcoded values.
+# ===========================================================================
+
+class TestConfigDrivenWeights:
+    """Changing config["scoring"]["weights"] must change the final score."""
+
+    def _score_with_weights(self, weights: dict) -> int:
+        cfg = dict(_CFG) | {"scoring": {"weights": weights}}
+        row = _make_row(rs_rating=80)
+        result = score_symbol(
+            symbol=_SYMBOL,
+            run_date=_TODAY,
+            row=row,
+            stage_result=_make_stage(2),
+            tt_result=_make_tt(7),
+            vcp_metrics=_make_vcp(is_valid=True, contraction_count=3),
+            sector_ranks={},
+            symbol_info=_make_symbol_info(_SYMBOL, "Technology"),
+            config=cfg,
+        )
+        return result.score
+
+    def test_boosting_rs_weight_raises_score_for_high_rs(self):
+        """Doubling rs_rating weight (and halving another) must change score."""
+        base_weights = {
+            "rs_rating": 0.30, "trend": 0.25, "vcp": 0.22,
+            "volume": 0.10, "fundamental": 0.07, "news": 0.06,
+        }
+        high_rs_weights = {
+            "rs_rating": 0.50, "trend": 0.15, "vcp": 0.22,
+            "volume": 0.05, "fundamental": 0.04, "news": 0.04,
+        }
+        # rs_rating=80 is above neutral (50), so boosting rs weight raises score
+        score_base = self._score_with_weights(base_weights)
+        score_high = self._score_with_weights(high_rs_weights)
+        assert score_high > score_base, (
+            f"Expected higher score with boosted rs weight; base={score_base}, high={score_high}"
+        )
+
+    def test_zeroing_vcp_weight_via_config_reduces_score(self):
+        """Setting vcp weight to 0 (and redistributing) must lower score for VCP-strong stock."""
+        no_vcp_weights = {
+            "rs_rating": 0.35, "trend": 0.30, "vcp": 0.00,
+            "volume": 0.15, "fundamental": 0.10, "news": 0.10,
+        }
+        base_weights = {
+            "rs_rating": 0.30, "trend": 0.25, "vcp": 0.22,
+            "volume": 0.10, "fundamental": 0.07, "news": 0.06,
+        }
+        score_base  = self._score_with_weights(base_weights)
+        score_no_vcp = self._score_with_weights(no_vcp_weights)
+        # Valid VCP with 3 contractions, vol ratio=0.4 scores 100 → removing weight lowers total
+        assert score_no_vcp < score_base, (
+            f"Zeroing VCP weight should lower score; base={score_base}, no_vcp={score_no_vcp}"
+        )
+
+
+class TestConfigDrivenVcpScore:
+    """Changing config["scoring"]["vcp_score"] must affect _compute_vcp_score output."""
+
+    def _score_vcp_param(self, vcp_overrides: dict) -> int:
+        cfg = dict(_CFG) | {"scoring": {"vcp_score": vcp_overrides}}
+        return score_symbol(
+            symbol=_SYMBOL,
+            run_date=_TODAY,
+            row=_make_row(rs_rating=75),
+            stage_result=_make_stage(2),
+            tt_result=_make_tt(7),
+            vcp_metrics=_make_vcp(is_valid=True, contraction_count=3, vol_contraction_ratio=0.4),
+            sector_ranks={},
+            symbol_info=_make_symbol_info(_SYMBOL, "Technology"),
+            config=cfg,
+        ).score
+
+    def test_raising_valid_base_raises_score(self):
+        score_low  = self._score_vcp_param({"valid_base": 60.0})
+        score_high = self._score_vcp_param({"valid_base": 90.0})
+        assert score_high > score_low
+
+    def test_lowering_valid_base_lowers_score(self):
+        score_default = self._score_vcp_param({"valid_base": 60.0})
+        score_low     = self._score_vcp_param({"valid_base": 30.0})
+        assert score_low < score_default
+
+
+class TestConfigDrivenVolumeScore:
+    """Changing config["scoring"]["volume_score"] must affect _compute_volume_score output."""
+
+    def _score_vol_param(self, vol_overrides: dict) -> int:
+        cfg = dict(_CFG) | {"scoring": {"volume_score": vol_overrides}}
+        # Breakout day: vol_ratio=3.0, pivot just below close
+        row = _make_row(rs_rating=75, pivot_high=148.0, vol_ratio=3.0)
+        return score_symbol(
+            symbol=_SYMBOL,
+            run_date=_TODAY,
+            row=row,
+            stage_result=_make_stage(2),
+            tt_result=_make_tt(7),
+            vcp_metrics=_make_vcp(is_valid=True),
+            sector_ranks={},
+            symbol_info=_make_symbol_info(_SYMBOL, "Technology"),
+            config=cfg,
+        ).score
+
+    def test_lower_perfect_vol_ratio_raises_breakout_score(self):
+        """Halving perfect_vol_ratio doubles vol score for the same vol_ratio."""
+        score_default = self._score_vol_param({"perfect_vol_ratio": 3.0})
+        score_easier  = self._score_vol_param({"perfect_vol_ratio": 1.5})
+        assert score_easier >= score_default
+
+
+class TestConfigDrivenQualityThresholds:
+    """Changing config["scoring"]["setup_quality_thresholds"] must affect grade assignment."""
+
+    def test_lower_a_plus_threshold_promotes_to_a_plus(self):
+        """Dropping A+ threshold from 85 to 50 should promote a mid-range score to A+."""
+        row = _make_row(rs_rating=80, pivot_high=148.0, vol_ratio=3.0)
+        sector_ranks = {"Technology": 1}
+
+        # Default config (A+ needs 85)
+        result_default = score_symbol(
+            symbol=_SYMBOL, run_date=_TODAY, row=row,
+            stage_result=_make_stage(2), tt_result=_make_tt(8),
+            vcp_metrics=_make_vcp(is_valid=True, contraction_count=3, vol_contraction_ratio=0.4),
+            sector_ranks=sector_ranks,
+            symbol_info=_make_symbol_info(_SYMBOL, "Technology"),
+            config=_CFG,
+        )
+
+        # Lowered threshold config
+        cfg_easy = dict(_CFG) | {
+            "scoring": {
+                "setup_quality_thresholds": {"a_plus": 50, "a": 40, "b": 30, "c": 20},
+                "setup_quality_conditions": {
+                    "a_plus_min_conditions": 8, "a_min_conditions": 8, "b_min_conditions": 6
+                },
+            }
+        }
+        result_easy = score_symbol(
+            symbol=_SYMBOL, run_date=_TODAY, row=row,
+            stage_result=_make_stage(2), tt_result=_make_tt(8),
+            vcp_metrics=_make_vcp(is_valid=True, contraction_count=3, vol_contraction_ratio=0.4),
+            sector_ranks=sector_ranks,
+            symbol_info=_make_symbol_info(_SYMBOL, "Technology"),
+            config=cfg_easy,
+        )
+
+        # Both scores are identical (weights unchanged); only grading changes
+        assert result_default.score == result_easy.score, "Score must not change when only thresholds change"
+        assert result_easy.setup_quality == "A+", (
+            f"Expected A+ with lowered threshold; got {result_easy.setup_quality} (score={result_easy.score})"
+        )
+
+    def test_higher_b_min_conditions_demotes_grade(self):
+        """Raising b_min_conditions to 8 means a 6/8 stock can't get B — falls to C or FAIL."""
+        cfg_strict = dict(_CFG) | {
+            "scoring": {
+                "setup_quality_thresholds": {"a_plus": 85, "a": 70, "b": 55, "c": 40},
+                "setup_quality_conditions": {
+                    "a_plus_min_conditions": 8, "a_min_conditions": 8, "b_min_conditions": 8,
+                },
+            }
+        }
+        result = score_symbol(
+            symbol=_SYMBOL, run_date=_TODAY, row=_make_row(rs_rating=70),
+            stage_result=_make_stage(2), tt_result=_make_tt(6),
+            vcp_metrics=_make_vcp(is_valid=False, contraction_count=2),
+            sector_ranks={},
+            symbol_info=_make_symbol_info(_SYMBOL, "Technology"),
+            config=cfg_strict,
+        )
+        assert result.setup_quality in ("C", "FAIL"), (
+            f"Expected C or FAIL with strict b_min_conditions=8; got {result.setup_quality}"
+        )

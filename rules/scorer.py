@@ -25,7 +25,7 @@ from typing import Any, Literal
 
 import pandas as pd
 
-from features.sector_rs import get_sector_score_bonus
+from features.sector_rs import get_sector_score
 from features.vcp import VCPMetrics
 from rules.fundamental_template import FundamentalResult, check_fundamental_template
 from rules.stage import StageResult
@@ -35,21 +35,61 @@ from utils.logger import get_logger
 log = get_logger(__name__)
 
 # ---------------------------------------------------------------------------
-# Score weights — must sum to exactly 1.0 (asserted at module load time).
+# Score weights — module-level defaults (kept for backward-compat / test imports).
+# score_symbol() reads from config["scoring"]["weights"] first; falls back here.
+# Must sum to exactly 1.0 (asserted at module load time).
 # ---------------------------------------------------------------------------
 
 SCORE_WEIGHTS: dict[str, float] = {
-    "rs_rating":   0.30,
-    "trend":       0.25,
-    "vcp":         0.22,
-    "volume":      0.10,
-    "fundamental": 0.07,
-    "news":        0.06,
+    "rs_rating":   0.22,
+    "trend":       0.22,
+    "vcp":         0.18,
+    "volume":      0.15,
+    "fundamental": 0.15,
+    "sector":      0.08,
+    "news":        0.00,
 }
 
 assert abs(sum(SCORE_WEIGHTS.values()) - 1.0) < 1e-9, (
     f"SCORE_WEIGHTS must sum to 1.0, got {sum(SCORE_WEIGHTS.values()):.10f}"
 )
+
+# ---------------------------------------------------------------------------
+# Default VCP-score parameters — overridable via config["scoring"]["vcp_score"].
+# ---------------------------------------------------------------------------
+_VCP_SCORE_DEFAULTS: dict = {
+    "valid_base":               60.0,
+    "ideal_contractions":       3,
+    "contraction_bonus_per_unit": 10.0,
+    "vol_bonus_strong":         20.0,
+    "vol_bonus_moderate":       10.0,
+    "vol_strong_threshold":     0.5,
+    "vol_moderate_threshold":   0.8,
+    "max_bonus":                40.0,
+    "partial_cap":              45.0,
+    "partial_per_contraction":  15.0,
+}
+
+# ---------------------------------------------------------------------------
+# Default volume-score parameters — overridable via config["scoring"]["volume_score"].
+# ---------------------------------------------------------------------------
+_VOL_SCORE_DEFAULTS: dict = {
+    "perfect_vol_ratio":   3.0,
+    "acc_dist_offset":    20.0,
+    "acc_dist_multiplier": 2.5,
+}
+
+# ---------------------------------------------------------------------------
+# Default quality-gate parameters — overridable via config["scoring"].
+# ---------------------------------------------------------------------------
+_QUALITY_DEFAULTS: dict = {
+    "setup_quality_thresholds": {"a_plus": 85, "a": 70, "b": 55, "c": 40},
+    "setup_quality_conditions": {
+        "a_plus_min_conditions": 8,
+        "a_min_conditions":      8,
+        "b_min_conditions":      6,
+    },
+}
 
 
 # ---------------------------------------------------------------------------
@@ -83,58 +123,90 @@ class SEPAResult:
     news_score: float | None = None             # Phase 5 — default None
     setup_quality: Literal["A+", "A", "B", "C", "FAIL"] = "FAIL"
     score: int = 0                              # 0–100
+    # Per-component weighted contributions (raw_score × weight).
+    # Each value is in the same unit as score (0–100 scale).
+    # Populated by score_symbol(); empty dict for legacy/Stage-non-2 results.
+    score_components: dict[str, float] = field(default_factory=dict)
+    # Active weights used for this scoring run — mirrors config["scoring"]["weights"].
+    # Stored alongside the result so the frontend never needs to hard-code them.
+    score_weights: dict[str, float] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
 # Internal component scorers — each returns a float in 0–100.
 # ---------------------------------------------------------------------------
 
-def _compute_vcp_score(vcp_metrics: VCPMetrics) -> float:
+def _compute_vcp_score(vcp_metrics: VCPMetrics, config: dict) -> float:
     """Return a 0–100 score reflecting VCP pattern quality.
 
+    All numeric thresholds are read from config["scoring"]["vcp_score"] with
+    fallback to _VCP_SCORE_DEFAULTS so existing tests that omit the key work
+    without modification.
+
     Qualified VCP:
-      base 60 + contraction quality bonus (0–40).
-      Bonus = (3 − |contractions − 3|) × 10   (ideal = 3 contractions)
-            + 20 if vol_contraction_ratio < 0.5  (strong drying-up)
-            + 10 if vol_contraction_ratio < 0.8  (moderate drying-up)
-      Bonus is capped at 40.
+      base (valid_base) + contraction quality bonus (0–max_bonus).
+      Bonus = (ideal_contractions − |contractions − ideal|) × contraction_bonus_per_unit
+            + vol_bonus_strong   if vol_contraction_ratio < vol_strong_threshold
+            + vol_bonus_moderate if vol_contraction_ratio < vol_moderate_threshold
+      Bonus is capped at max_bonus.
 
     Unqualified VCP:
-      min(45, max(0, contraction_count × 15)) — partial credit for early-stage basing,
-      capped at 45 so it always falls below the valid-VCP floor of 60.
+      min(partial_cap, max(0, contraction_count × partial_per_contraction))
+      Always below valid_base to preserve the valid/invalid score separation.
     """
+    sc = {**_VCP_SCORE_DEFAULTS, **config.get("scoring", {}).get("vcp_score", {})}
+
+    valid_base               = float(sc["valid_base"])
+    ideal_contractions       = int(sc["ideal_contractions"])
+    contraction_bonus_per_unit = float(sc["contraction_bonus_per_unit"])
+    vol_bonus_strong         = float(sc["vol_bonus_strong"])
+    vol_bonus_moderate       = float(sc["vol_bonus_moderate"])
+    vol_strong_threshold     = float(sc["vol_strong_threshold"])
+    vol_moderate_threshold   = float(sc["vol_moderate_threshold"])
+    max_bonus                = float(sc["max_bonus"])
+    partial_cap              = float(sc["partial_cap"])
+    partial_per_contraction  = float(sc["partial_per_contraction"])
+
     if vcp_metrics.is_valid_vcp:
-        contraction_bonus = (3 - abs(vcp_metrics.contraction_count - 3)) * 10
+        contraction_bonus = (
+            (ideal_contractions - abs(vcp_metrics.contraction_count - ideal_contractions))
+            * contraction_bonus_per_unit
+        )
         vol_ratio = vcp_metrics.vol_contraction_ratio
-        vol_bonus = 0
+        vol_bonus = 0.0
         if not math.isnan(vol_ratio):
-            if vol_ratio < 0.5:
-                vol_bonus = 20
-            elif vol_ratio < 0.8:
-                vol_bonus = 10
-        bonus = min(40, contraction_bonus + vol_bonus)
-        return 60.0 + bonus
+            if vol_ratio < vol_strong_threshold:
+                vol_bonus = vol_bonus_strong
+            elif vol_ratio < vol_moderate_threshold:
+                vol_bonus = vol_bonus_moderate
+        bonus = min(max_bonus, contraction_bonus + vol_bonus)
+        return valid_base + bonus
     else:
-        # Partial credit for early-stage basing — capped at 45 (= 3 contractions × 15)
-        # to ensure non-qualifying VCP always scores below the valid-VCP floor of 60.
-        # Without this cap, a stock with many detected legs (e.g. 7 × 15 = 105) inflates
-        # the weighted total past 100, causing min(100, ...) to collapse all Stage-2
-        # scores to exactly 100 — making intermediate scores impossible.
-        return min(45.0, max(0.0, float(vcp_metrics.contraction_count) * 15.0))
+        return min(partial_cap, max(0.0, float(vcp_metrics.contraction_count) * partial_per_contraction))
 
 
-def _compute_volume_score(row: pd.Series, breakout_triggered: bool) -> float:
+def _compute_volume_score(row: pd.Series, breakout_triggered: bool, config: dict) -> float:
     """Return a 0–100 score for volume quality.
 
-    On a breakout day: vol_ratio / 3.0 × 100 (3× avg volume = perfect score).
-    Otherwise: accumulation/distribution proxy from the acc_dist_score column.
+    Parameters are read from config["scoring"]["volume_score"] with fallback to
+    _VOL_SCORE_DEFAULTS.
+
+    On a breakout day: vol_ratio / perfect_vol_ratio × 100.
+    Otherwise: accumulation/distribution proxy from the acc_dist_score column,
+               shifted by acc_dist_offset and scaled by acc_dist_multiplier.
     """
+    vc = {**_VOL_SCORE_DEFAULTS, **config.get("scoring", {}).get("volume_score", {})}
+
+    perfect_vol_ratio   = float(vc["perfect_vol_ratio"])
+    acc_dist_offset     = float(vc["acc_dist_offset"])
+    acc_dist_multiplier = float(vc["acc_dist_multiplier"])
+
     if breakout_triggered:
         vol_ratio = float(row.get("vol_ratio", 1.0))
-        return min(100.0, vol_ratio / 3.0 * 100.0)
+        return min(100.0, vol_ratio / perfect_vol_ratio * 100.0)
     else:
         acc_dist = float(row.get("acc_dist_score", 0))
-        return min(100.0, max(0.0, (acc_dist + 20.0) * 2.5))
+        return min(100.0, max(0.0, (acc_dist + acc_dist_offset) * acc_dist_multiplier))
 
 
 # ---------------------------------------------------------------------------
@@ -146,25 +218,42 @@ def _determine_quality(
     stage: int,
     conditions_met: int,
     vcp_qualified: bool,
+    config: dict,
 ) -> Literal["A+", "A", "B", "C", "FAIL"]:
     """Classify setup quality from score and individual gate conditions.
 
+    Thresholds and minimum condition counts are read from config["scoring"] with
+    fallback to _QUALITY_DEFAULTS.
+
     Grade hierarchy (first match wins):
-      A+  → score ≥ 85  AND  stage==2  AND  conditions_met==8  AND  vcp_qualified
-      A   → score ≥ 70  AND  stage==2  AND  conditions_met==8
-      B   → score ≥ 55  AND  stage==2  AND  conditions_met ≥ 6
-      C   → score ≥ 40  AND  stage==2
-      FAIL → everything else (non-Stage-2, score<40, or <6 TT conditions)
+      A+  → score ≥ a_plus  AND  stage==2  AND  conditions_met >= a_plus_min  AND  vcp_qualified
+      A   → score ≥ a       AND  stage==2  AND  conditions_met >= a_min
+      B   → score ≥ b       AND  stage==2  AND  conditions_met >= b_min
+      C   → score ≥ c       AND  stage==2
+      FAIL → everything else
     """
+    sc = config.get("scoring", {})
+    thr  = {**_QUALITY_DEFAULTS["setup_quality_thresholds"],  **sc.get("setup_quality_thresholds", {})}
+    cond = {**_QUALITY_DEFAULTS["setup_quality_conditions"], **sc.get("setup_quality_conditions", {})}
+
+    ap_score = int(thr["a_plus"])
+    a_score  = int(thr["a"])
+    b_score  = int(thr["b"])
+    c_score  = int(thr["c"])
+
+    ap_min = int(cond["a_plus_min_conditions"])
+    a_min  = int(cond["a_min_conditions"])
+    b_min  = int(cond["b_min_conditions"])
+
     if stage != 2:
         return "FAIL"
-    if score >= 85 and conditions_met == 8 and vcp_qualified:
+    if score >= ap_score and conditions_met >= ap_min and vcp_qualified:
         return "A+"
-    if score >= 70 and conditions_met == 8:
+    if score >= a_score and conditions_met >= a_min:
         return "A"
-    if score >= 55 and conditions_met >= 6:
+    if score >= b_score and conditions_met >= b_min:
         return "B"
-    if score >= 40:
+    if score >= c_score:
         return "C"
     return "FAIL"
 
@@ -281,8 +370,8 @@ def score_symbol(
     # ------------------------------------------------------------------
     rs_rating_score: float  = float(min(100, max(0, rs_rating)))
     trend_score: float      = tt_result.conditions_met / 8.0 * 100.0
-    vcp_score: float        = _compute_vcp_score(vcp_metrics)
-    volume_score: float     = _compute_volume_score(row, breakout_triggered)
+    vcp_score: float        = _compute_vcp_score(vcp_metrics, config)
+    volume_score: float     = _compute_volume_score(row, breakout_triggered, config)
 
     # Phase 5: call check_fundamental_template when fundamentals enabled + provided
     _fund_result: FundamentalResult | None = None
@@ -301,19 +390,38 @@ def score_symbol(
         news_score_norm = 50.0
 
     # ------------------------------------------------------------------
-    # Weighted composite
+    # Sector strength score — 0-100 continuous (replaces the legacy flat +5 bonus)
     # ------------------------------------------------------------------
+    sector_score: float = get_sector_score(symbol, sector_ranks, symbol_info)
+
+    # ------------------------------------------------------------------
+    # Weighted composite — weights come from config if present, else module defaults.
+    # ------------------------------------------------------------------
+    weights = {**SCORE_WEIGHTS, **config.get("scoring", {}).get("weights", {})}
     weighted_score: float = (
-        rs_rating_score     * SCORE_WEIGHTS["rs_rating"]
-        + trend_score       * SCORE_WEIGHTS["trend"]
-        + vcp_score         * SCORE_WEIGHTS["vcp"]
-        + volume_score      * SCORE_WEIGHTS["volume"]
-        + fundamental_score * SCORE_WEIGHTS["fundamental"]
-        + news_score_norm   * SCORE_WEIGHTS["news"]
+        rs_rating_score     * weights.get("rs_rating",   0.0)
+        + trend_score       * weights.get("trend",       0.0)
+        + vcp_score         * weights.get("vcp",         0.0)
+        + volume_score      * weights.get("volume",      0.0)
+        + fundamental_score * weights.get("fundamental", 0.0)
+        + sector_score      * weights.get("sector",      0.0)
+        + news_score_norm   * weights.get("news",        0.0)
     )
 
-    sector_bonus: int = get_sector_score_bonus(symbol, sector_ranks, symbol_info)
-    final_score_float = min(100.0, weighted_score + sector_bonus)
+    final_score_float = min(100.0, weighted_score)
+
+    # ------------------------------------------------------------------
+    # Per-component weighted contributions (stored for frontend rendering)
+    # ------------------------------------------------------------------
+    _score_components: dict[str, float] = {
+        "rs_rating":   rs_rating_score     * weights.get("rs_rating",   0.0),
+        "trend":       trend_score         * weights.get("trend",       0.0),
+        "vcp":         vcp_score           * weights.get("vcp",         0.0),
+        "volume":      volume_score        * weights.get("volume",      0.0),
+        "fundamental": fundamental_score   * weights.get("fundamental", 0.0),
+        "sector":      sector_score        * weights.get("sector",      0.0),
+        "news":        news_score_norm     * weights.get("news",        0.0),
+    }
 
     # ------------------------------------------------------------------
     # Hard gate: Stage 2 only
@@ -331,6 +439,7 @@ def score_symbol(
         stage_result.stage,
         tt_result.conditions_met,
         vcp_qualified,
+        config,
     )
 
     # Phase 5: hard gate — fundamentals must pass when hard_gate=True
@@ -343,10 +452,10 @@ def score_symbol(
 
     log.debug(
         "score_symbol: %s stage=%d score=%d quality=%s "
-        "rs=%.1f trend=%.1f vcp=%.1f vol=%.1f fund=%.1f news=%.1f bonus=%d",
+        "rs=%.1f trend=%.1f vcp=%.1f vol=%.1f fund=%.1f sector=%.1f news=%.1f",
         symbol, stage_result.stage, final_score, setup_quality,
         rs_rating_score, trend_score, vcp_score, volume_score,
-        fundamental_score, news_score_norm, sector_bonus,
+        fundamental_score, sector_score, news_score_norm,
     )
 
     # ------------------------------------------------------------------
@@ -411,8 +520,10 @@ def score_symbol(
         target_price=target_price,
         reward_risk_ratio=reward_risk_ratio,
         rs_rating=rs_rating,
-        sector_bonus=sector_bonus,
+        sector_bonus=0,                         # legacy field — sector is now a scored component
         news_score=news_score,
         setup_quality=setup_quality,
         score=final_score,
+        score_components=_score_components,
+        score_weights=dict(weights),
     )
