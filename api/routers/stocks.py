@@ -101,6 +101,18 @@ def _parse_row(row: dict[str, Any]) -> StockResultSchema:
     if isinstance(vcp_det, dict) and "qualified" not in vcp_det:
         raw["vcp_details"] = None
 
+    # ── Fundamental score ──────────────────────────────────────────────
+    # Extract the real 0–100 score from fundamental_details.score stored in
+    # result_json.  When fundamentals were not evaluated the backend used a
+    # neutral 50, so we default to 50 here to keep the breakdown consistent.
+    if "fundamental_score" not in raw:
+        fund_details = raw.get("fundamental_details") or {}
+        if isinstance(fund_details, dict) and "score" in fund_details:
+            raw["fundamental_score"] = int(fund_details["score"])
+        else:
+            # No fundamental evaluation → use neutral 50 (mirrors scorer.py)
+            raw["fundamental_score"] = 50
+
     return StockResultSchema.model_validate(raw)
 
 
@@ -134,9 +146,17 @@ async def get_top_stocks(
 
     Optional ``quality`` filter accepts A+, A, B, or C.
     Optional ``date`` overrides the default (today).
+    When no explicit date is given and today has no results, falls back to
+    the most recent date that has screening data.
     """
     effective_date = _resolve_date(date) if date else run_date
     rows = db.get_results(effective_date)
+
+    # Fall back to the latest available run date when today has no data
+    if not rows and not date:
+        latest = db.get_last_run_date()
+        if latest and latest != effective_date:
+            rows = db.get_results(latest)
 
     if quality:
         rows = [r for r in rows if r.get("setup_quality") == quality]
@@ -157,6 +177,12 @@ async def get_trend_stocks(
     """All stocks that passed the Trend Template on a given date."""
     effective_date = _resolve_date(date)
     rows = db.get_results(effective_date)
+
+    # Fall back to the latest available run date when today has no data
+    if not rows and not date:
+        latest = db.get_last_run_date()
+        if latest and latest != effective_date:
+            rows = db.get_results(latest)
 
     filtered = [
         r for r in rows
@@ -179,6 +205,12 @@ async def get_vcp_stocks(
     """Stocks with a qualified VCP pattern on a given date."""
     effective_date = _resolve_date(date)
     rows = db.get_results(effective_date)
+
+    # Fall back to the latest available run date when today has no data
+    if not rows and not date:
+        latest = db.get_last_run_date()
+        if latest and latest != effective_date:
+            rows = db.get_results(latest)
     min_rank = _QUALITY_ORDER.get(min_quality, 0)
 
     filtered = [

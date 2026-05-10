@@ -8,6 +8,7 @@ import StockTable from "@/components/StockTable";
 import QualityBadge from "@/components/QualityBadge";
 import {
   Star, Rocket, Plus, X, Loader2, CheckCircle2, AlertCircle,
+  Upload, FileText, ChevronDown, ChevronUp,
 } from "lucide-react";
 
 type Toast = { type: "success" | "error"; msg: string } | null;
@@ -30,6 +31,12 @@ export default function WatchlistPage() {
   const [running, setRunning] = useState(false);
   const [toast, setToast] = useState<Toast>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // Upload state
+  const [showUpload, setShowUpload]   = useState(false);
+  const [dragOver, setDragOver]       = useState(false);
+  const [uploading, setUploading]     = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const { data, isLoading, mutate } = useSWR(
     "watchlist",
@@ -89,6 +96,44 @@ export default function WatchlistPage() {
     } catch {
       showToast({ type: "error", msg: "Pipeline run failed" });
     } finally { setRunning(false); }
+  };
+
+  const ACCEPTED = [".csv", ".json", ".xlsx", ".xls", ".txt"];
+
+  const uploadFile = async (file: File) => {
+    const ext = "." + file.name.split(".").pop()?.toLowerCase();
+    if (!ACCEPTED.includes(ext)) {
+      showToast({ type: "error", msg: `Unsupported file type. Use: ${ACCEPTED.join(", ")}` });
+      return;
+    }
+    setUploading(true);
+    try {
+      const res = await api.uploadWatchlist(file);
+      await mutate();
+      const { added, skipped, invalid } = res.data;
+      const parts = [`${added} added`];
+      if (skipped)          parts.push(`${skipped} already existed`);
+      if (invalid?.length)  parts.push(`${invalid.length} invalid`);
+      showToast({ type: "success", msg: parts.join(" · ") });
+      setShowUpload(false);
+    } catch {
+      showToast({ type: "error", msg: "Upload failed — check file format" });
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  };
+
+  const onFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) uploadFile(file);
+  };
+
+  const onDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setDragOver(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file) uploadFile(file);
   };
 
   return (
@@ -152,6 +197,64 @@ export default function WatchlistPage() {
               Add Symbol
             </button>
           </div>
+        </div>
+
+        {/* Upload watchlist file — collapsible */}
+        <div className="border-b border-slate-800">
+          <button
+            onClick={() => setShowUpload((v) => !v)}
+            className="w-full flex items-center justify-between px-4 py-2.5 text-xs text-slate-400 hover:text-slate-200 hover:bg-slate-800/40 transition-colors"
+          >
+            <span className="flex items-center gap-1.5">
+              <Upload size={13} />
+              Upload watchlist file
+              <span className="text-slate-600 ml-1">CSV · JSON · XLSX · TXT</span>
+            </span>
+            {showUpload ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+          </button>
+
+          {showUpload && (
+            <div className="px-4 pb-4">
+              {/* Hidden file input */}
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".csv,.json,.xlsx,.xls,.txt"
+                onChange={onFileChange}
+                className="hidden"
+              />
+
+              {/* Drop zone */}
+              <div
+                onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+                onDragLeave={() => setDragOver(false)}
+                onDrop={onDrop}
+                onClick={() => !uploading && fileInputRef.current?.click()}
+                className={`relative flex flex-col items-center justify-center gap-2 border-2 border-dashed rounded-xl px-6 py-8 cursor-pointer transition-colors ${
+                  dragOver
+                    ? "border-blue-500 bg-blue-900/20 text-blue-300"
+                    : "border-slate-700 hover:border-slate-500 hover:bg-slate-800/30 text-slate-500"
+                } ${uploading ? "pointer-events-none opacity-60" : ""}`}
+              >
+                {uploading ? (
+                  <>
+                    <Loader2 size={24} className="animate-spin text-blue-400" />
+                    <p className="text-sm text-slate-400">Uploading…</p>
+                  </>
+                ) : (
+                  <>
+                    <FileText size={24} className={dragOver ? "text-blue-400" : "text-slate-600"} />
+                    <p className="text-sm font-medium">
+                      {dragOver ? "Drop file to upload" : "Click or drag a file here"}
+                    </p>
+                    <p className="text-xs text-slate-600">
+                      One symbol per row · .csv, .json, .xlsx, .xls, .txt · max 1 MB
+                    </p>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
         </div>
 
         {isLoading ? (

@@ -13,6 +13,9 @@ data:
   features_dir: "data/features"
   fundamentals_dir: "data/fundamentals"
   news_dir: "data/news"
+  # Maximum years of history to fetch when bootstrapping a new/missing symbol.
+  # For newly listed symbols, whatever data is available will be fetched regardless.
+  bootstrap_years: 5
 
 watchlist:
   always_scan: true
@@ -33,6 +36,7 @@ trend_template:
 
 vcp:
   detector: "rule_based"
+  pivot_sensitivity: 15       # bars each side of a swing — 5 was too sensitive (15-22 contractions per stock; needs 2-5)
   min_contractions: 2
   max_contractions: 5
   require_declining_depth: true

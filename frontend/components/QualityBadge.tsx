@@ -1,7 +1,7 @@
 import type { SetupQuality } from "@/lib/types";
 
 interface Props {
-  quality: SetupQuality | string;
+  quality: SetupQuality | string | undefined;
   size?: "sm" | "md" | "lg";
 }
 
@@ -21,6 +21,7 @@ const SIZE_STYLES = {
 
 /** Named export — preferred. */
 export function QualityBadge({ quality, size = "md" }: Props) {
+  if (!quality) return <span className="text-slate-600 text-xs">—</span>;
   const style =
     QUALITY_STYLES[quality] ?? "bg-slate-700/40 text-slate-400 border-slate-600/40";
   return (

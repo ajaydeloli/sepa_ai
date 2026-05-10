@@ -62,6 +62,8 @@ export interface StockResult {
   rs_rating: number;
   news_score: number | null;
   fundamental_pass: boolean;
+  /** 0–100 score from FundamentalResult.score; 50 = neutral (not evaluated) */
+  fundamental_score: number;
   is_watchlist: boolean;
   trend_template_details: TrendTemplate | null;
   vcp_details: VCPDetails | null;

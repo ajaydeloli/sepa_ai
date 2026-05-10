@@ -102,6 +102,24 @@ export const api = {
   removeFromWatchlist: (symbol: string) =>
     apiFetch(`/api/v1/watchlist/${symbol}`, { method: "DELETE" }),
 
+  /**
+   * Upload a watchlist file (.csv / .json / .xlsx / .txt).
+   * Uses FormData — must NOT set Content-Type (browser sets multipart boundary).
+   */
+  uploadWatchlist: async (file: File): Promise<APIResponse<{
+    added: number; skipped: number; invalid: string[]; watchlist: unknown[];
+  }>> => {
+    const form = new FormData();
+    form.append("file", file);
+    const res = await fetch(`${API_BASE}/api/v1/watchlist/upload`, {
+      method: "POST",
+      headers: { "X-API-Key": API_KEY },   // no Content-Type — browser sets it
+      body: form,
+    });
+    if (!res.ok) throw new Error(`Upload failed ${res.status}`);
+    return res.json();
+  },
+
   // -- Portfolio ------------------------------------------------------------
 
   /** Full portfolio summary including open positions. */

@@ -198,7 +198,6 @@ export default function ScreenerPage() {
         <StockTable
           initialData={stocks}
           showWatchlistToggle
-          swrKey={`screener-live-${tab}-${quality}-${limit}-${minRs}-${date}`}
           onRowClick={(symbol) => router.push(`/screener/${symbol}`)}
         />
       )}

@@ -95,7 +95,14 @@ async def health_check(db: SQLiteStore = Depends(get_db)) -> APIResponse[dict]:
     last_run_status: str | None = None
 
     if run:
-        last_run = str(run["run_date"])
+        raw_ts = str(run.get("created_at") or run["run_date"])
+        # SQLite CURRENT_TIMESTAMP stores UTC without a timezone suffix.
+        # Appending +00:00 tells JavaScript to parse it as UTC so that
+        # toLocaleString("en-IN", { timeZone: "Asia/Kolkata" }) produces
+        # the correct IST wall-clock time.
+        if raw_ts and "+" not in raw_ts and "Z" not in raw_ts and len(raw_ts) > 10:
+            raw_ts = raw_ts.replace(" ", "T") + "+00:00"
+        last_run = raw_ts
         raw_status = (run.get("status") or "").lower()
         if raw_status == "success":
             last_run_status = "success"

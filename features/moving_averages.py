@@ -31,6 +31,9 @@ _SMA_WINDOWS: list[int] = [10, 21, 50, 150, 200]
 _DEFAULT_MA200_SLOPE_LOOKBACK: int = 20
 _DEFAULT_MA50_SLOPE_LOOKBACK: int = 10
 
+_52W_WINDOW: int = 252          # ~1 trading year
+_52W_MIN_PERIODS: int = 200     # minimum history to emit a non-NaN value
+
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -56,7 +59,8 @@ def compute(df: pd.DataFrame, config: dict) -> pd.DataFrame:
     pd.DataFrame
         The same DataFrame with eight new float64 columns appended:
         ``sma_10``, ``sma_21``, ``sma_50``, ``sma_150``, ``sma_200``,
-        ``ema_21``, ``ma_slope_50``, ``ma_slope_200``.
+        ``ema_21``, ``ma_slope_50``, ``ma_slope_200``,
+        ``high_52w``, ``low_52w``.
 
     Raises
     ------
@@ -105,6 +109,15 @@ def compute(df: pd.DataFrame, config: dict) -> pd.DataFrame:
     # ------------------------------------------------------------------
     df["ma_slope_50"] = _rolling_slope(df["sma_50"], ma50_lookback)
     df["ma_slope_200"] = _rolling_slope(df["sma_200"], ma200_lookback)
+
+    # ------------------------------------------------------------------
+    # 52-week (252-bar) rolling high and low — required by trend_template
+    # conditions 6 ("price ≥ N% above 52w low") and 7 ("price within N%
+    # of 52w high").  Uses min_periods=200 so values appear as soon as
+    # SMA-200 is available; for shorter histories they stay NaN.
+    # ------------------------------------------------------------------
+    df["high_52w"] = df["high"].rolling(window=_52W_WINDOW, min_periods=_52W_MIN_PERIODS).max()
+    df["low_52w"]  = df["low"].rolling(window=_52W_WINDOW, min_periods=_52W_MIN_PERIODS).min()
 
     log.debug("moving_averages.compute finished; shape=%s", df.shape)
     return df

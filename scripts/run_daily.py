@@ -34,7 +34,7 @@ from ingestion.universe_loader import load_watchlist_file, resolve_symbols  # no
 from ingestion.validator import validate  # noqa: E402
 from ingestion.yfinance_source import YFinanceSource  # noqa: E402
 from pipeline.context import RunContext  # noqa: E402
-from storage.parquet_store import append_row  # noqa: E402
+from storage.parquet_store import append_row, get_last_date, write_parquet  # noqa: E402
 from storage.sqlite_store import SQLiteStore  # noqa: E402
 from utils.exceptions import DataSourceError, DataValidationError, FeatureStoreOutOfSyncError, InsufficientDataError  # noqa: E402
 from utils.logger import get_logger  # noqa: E402
@@ -199,19 +199,57 @@ def main() -> None:
         processed_dir = _ROOT / processed_dir
     processed_dir.mkdir(parents=True, exist_ok=True)
 
+    # ── History depth for new symbols ──────────────────────────────────────
+    # Reads from config/settings.yaml → data.bootstrap_years (default 5).
+    bootstrap_years: int = int(config.get("data", {}).get("bootstrap_years", 5))
+
     source = YFinanceSource()
     end_date = run_date
-    start_date = run_date - timedelta(days=5)
 
-    success: int = 0        # fetched + validated + appended
-    skipped: int = 0        # today's data already in parquet (idempotent re-run)
+    success: int = 0        # existing symbols gap-filled
+    bootstrapped: int = 0   # new symbols fetched with full history
+    skipped: int = 0        # already up to date
     failed: int = 0
     failed_symbols: list[str] = []
 
     for symbol in run_symbols.all:
         parquet_path = processed_dir / f"{symbol}.parquet"
 
-        # ── Fetch ──────────────────────────────────────────────────────────
+        # ── Decide fetch range ──────────────────────────────────────────────
+        is_new_symbol = not parquet_path.exists()
+
+        if is_new_symbol:
+            # New symbol (or deleted parquet): fetch up to bootstrap_years of history.
+            # yfinance will return whatever is available for newly listed stocks.
+            start_date = end_date - timedelta(days=bootstrap_years * 365)
+            log.info(
+                "New symbol %s — bootstrapping up to %d years of history from %s.",
+                symbol, bootstrap_years, start_date,
+            )
+        else:
+            # Existing symbol: fetch from the day after the last stored date so
+            # no gaps are left even if the pipeline was not run for a long time.
+            last_date = get_last_date(parquet_path)
+            if last_date is None:
+                # Parquet file exists but is empty — treat as new.
+                start_date = end_date - timedelta(days=bootstrap_years * 365)
+                is_new_symbol = True
+                log.warning(
+                    "Symbol %s has an empty parquet — bootstrapping full history from %s.",
+                    symbol, start_date,
+                )
+            else:
+                start_date = last_date + timedelta(days=1)
+                if start_date > end_date:
+                    log.debug(
+                        "Symbol %s already up to date (last=%s). Skipping.", symbol, last_date
+                    )
+                    skipped += 1
+                    continue
+                log.info(
+                    "Symbol %s: gap-fill from %s → %s.",
+                    symbol, start_date, end_date,
+                )
         try:
             df = source.fetch(symbol, start=start_date, end=end_date)
         except DataSourceError as exc:
@@ -232,38 +270,57 @@ def main() -> None:
             continue
 
         # ── Validate ───────────────────────────────────────────────────────
+        # min_rows=1 so newly listed symbols with limited history are accepted.
+        # For new symbols skip run_date so gap detection doesn't fire on the
+        # historical range; for existing symbols pass run_date for daily checks.
         try:
-            df = validate(df, symbol, run_date=run_date, min_rows=1)
+            df = validate(
+                df,
+                symbol,
+                run_date=None if is_new_symbol else run_date,
+                min_rows=1,
+            )
         except (DataValidationError, InsufficientDataError) as exc:
             log.warning("validate(%s) failed: %s", symbol, exc)
             failed += 1
             failed_symbols.append(symbol)
             continue
 
-        # ── Append to processed parquet ────────────────────────────────────
+        # ── Write to processed parquet ─────────────────────────────────────
+        # New symbols: write_parquet (full historical write).
+        # Existing symbols: append_row (gap-fill; overlap check built in).
         try:
-            append_row(parquet_path, df)
-            log.info(
-                "append_row(%s): %d row(s) persisted → %s",
-                symbol, len(df), parquet_path.name,
-            )
-            success += 1
+            if is_new_symbol:
+                write_parquet(parquet_path, df)
+                log.info(
+                    "bootstrap(%s): %d rows written → %s",
+                    symbol, len(df), parquet_path.name,
+                )
+                bootstrapped += 1
+            else:
+                append_row(parquet_path, df)
+                log.info(
+                    "append(%s): %d row(s) gap-filled → %s",
+                    symbol, len(df), parquet_path.name,
+                )
+                success += 1
         except FeatureStoreOutOfSyncError:
-            # Today's data already present — idempotent re-run, not an error
-            log.debug("append_row(%s): today's data already exists — skipping.", symbol)
+            # Data already present — idempotent re-run, not an error.
+            log.debug("append(%s): data already exists — skipping.", symbol)
             skipped += 1
         except Exception as exc:  # noqa: BLE001
-            log.error("append_row(%s) failed: %s", symbol, exc)
+            log.error("write(%s) failed: %s", symbol, exc)
             failed += 1
             failed_symbols.append(symbol)
 
     log.info(
-        "Daily run complete: %d appended, %d already up-to-date, %d failed (of %d total).",
-        success, skipped, failed, len(run_symbols.all),
+        "Daily run complete: %d bootstrapped, %d gap-filled, %d already up-to-date, "
+        "%d failed (of %d total).",
+        bootstrapped, success, skipped, failed, len(run_symbols.all),
     )
     print(
-        f"\nDaily run complete: {success} appended, {skipped} already up-to-date, "
-        f"{failed} failed (of {len(run_symbols.all)} total)."
+        f"\nDaily run complete: {bootstrapped} bootstrapped, {success} gap-filled, "
+        f"{skipped} already up-to-date, {failed} failed (of {len(run_symbols.all)} total)."
     )
     if failed_symbols:
         log.warning("Failed symbols: %s", ", ".join(failed_symbols))

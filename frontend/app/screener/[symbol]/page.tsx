@@ -34,17 +34,48 @@ const TABS: { id: Tab; label: string }[] = [
 ];
 
 // ---------------------------------------------------------------------------
-// Score breakdown config (weights from scorer.py)
+// Score breakdown config — mirrors backend SCORE_WEIGHTS in rules/scorer.py
+// rs_rating=30, trend=25, vcp=22, volume=10, fundamental=7, news=6
 // ---------------------------------------------------------------------------
 interface ScoreRow { label: string; value: number; max: number; color: string }
 
 function scoreBreakdown(s: StockResult): ScoreRow[] {
+  // ── Trend Template (0–25): partial credit on conditions_met, not binary ──
+  const trendScore = Math.round((s.conditions_met / 8) * 25);
+
+  // ── RS Rating (0–30) ──────────────────────────────────────────────────────
+  const rsScore = Math.round((s.rs_rating / 100) * 30);
+
+  // ── VCP Pattern (0–22): approximated from qualify state + contraction count
+  //    Backend: qualified → 60-100 range; unqualified → min(45, cnt×15)
+  //    Contribution = vcp_raw / 100 × 22 ──────────────────────────────────
+  const cnt = s.vcp_details?.contraction_count ?? 0;
+  const vcpRaw = s.vcp_qualified ? 70 : Math.min(45, cnt * 15);
+  const vcpScore = Math.round((vcpRaw / 100) * 22);
+
+  // ── Volume (0–10): breakout_triggered is the best proxy we expose ────────
+  //    On a breakout the backend uses vol_ratio / 3 × 100; off breakout it
+  //    uses acc_dist.  We show 10 on breakout, neutral 5 otherwise.
+  const volScore = s.breakout_triggered ? 10 : 5;
+
+  // ── Fundamentals (0–7) ────────────────────────────────────────────────────
+  //    fundamental_score is 0–100 from FundamentalResult.score (conditions_met/7×100).
+  //    When fundamentals were not evaluated the backend used neutral 50, so the
+  //    API also returns 50 as the default — giving ~3.5 pts, which rounds to 4.
+  const fundScore = Math.round((s.fundamental_score / 100) * 7);
+
+  // ── News (0–6): (news_score+100)/2 × 0.06; absent → neutral 3 ───────────
+  const newsScore = s.news_score != null
+    ? Math.min(6, Math.round(((s.news_score + 100) / 2) * 0.06))
+    : 3;
+
   return [
-    { label: "Trend Template",  value: s.trend_template_pass ? 30 : 0,         max: 30, color: "bg-blue-500" },
-    { label: "VCP Pattern",     value: s.vcp_qualified        ? 25 : 0,         max: 25, color: "bg-purple-500" },
-    { label: "RS Rating",       value: Math.round((s.rs_rating / 100) * 20),   max: 20, color: "bg-yellow-500" },
-    { label: "Breakout Trigger",value: s.breakout_triggered   ? 15 : 0,         max: 15, color: "bg-green-500" },
-    { label: "Fundamentals",    value: s.fundamental_pass     ? 10 : 0,         max: 10, color: "bg-teal-500" },
+    { label: "RS Rating",       value: rsScore,   max: 30, color: "bg-yellow-500" },
+    { label: "Trend Template",  value: trendScore, max: 25, color: "bg-blue-500"   },
+    { label: "VCP Pattern",     value: vcpScore,   max: 22, color: "bg-purple-500" },
+    { label: "Volume",          value: volScore,   max: 10, color: "bg-green-500"  },
+    { label: "Fundamentals",    value: fundScore,  max:  7, color: "bg-teal-500"   },
+    { label: "News",            value: newsScore,  max:  6, color: "bg-orange-400" },
   ];
 }
 

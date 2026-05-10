@@ -188,6 +188,7 @@ def run_screen(
     fundamentals_map: dict[str, dict] | None = None,
     news_scores: dict[str, float] | None = None,
     force_symbols: list[str] | None = None,
+    rs_universe: list[str] | None = None,
 ) -> list[SEPAResult]:
     """Full SEPA screening pipeline.
 
@@ -227,6 +228,12 @@ def run_screen(
         (e.g. all watchlist symbols).  They are appended to passed_symbols
         after pre_filter runs, so they always get a screen_results row
         (even if it is FAIL) rather than showing as "--" in the UI.
+    rs_universe:
+        Full symbol list to use for cross-symbol RS percentile ranking.
+        Defaults to *universe* when not supplied.  Pass the full Nifty 500
+        list here whenever *universe* is a scope-filtered subset (e.g.
+        watchlist-only), so RS ratings remain valid 0–99 percentile scores
+        against the entire market — as PROJECT_DESIGN.md specifies.
 
     Returns
     -------
@@ -262,9 +269,13 @@ def run_screen(
             passed_symbols = list(dict.fromkeys(passed_symbols + extras))
 
     # ── Step 2: RS rating pass (cross-symbol) ─────────────────────────────
-    log.info("run_screen: Step 2 — run_rs_rating_pass")
+    # IMPORTANT: RS must be ranked against the full Nifty 500 universe, NOT
+    # the (possibly scope-filtered) screener universe.  When rs_universe is
+    # provided (e.g. scope="watchlist"), use it; otherwise fall back to universe.
+    _rs_pool = rs_universe if rs_universe is not None else universe
+    log.info("run_screen: Step 2 — run_rs_rating_pass (pool=%d)", len(_rs_pool))
     rs_ratings: dict[str, int] = run_rs_rating_pass(
-        universe, run_date, config, benchmark_df
+        _rs_pool, run_date, config, benchmark_df
     )
 
     # ── Step 3: Write RS ratings back to feature Parquet files ────────────

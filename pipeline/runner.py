@@ -55,7 +55,7 @@ from reports.daily_watchlist import (
 from screener.pipeline import run_screen
 from screener.results import persist_results
 from llm.explainer import generate_batch_briefs, generate_watchlist_summary
-from storage.parquet_store import append_row, read_last_n_rows, read_parquet
+from storage.parquet_store import append_row, get_last_date, read_last_n_rows, read_parquet, write_parquet
 from storage.sqlite_store import SQLiteStore
 from utils.exceptions import FeatureStoreOutOfSyncError
 from utils.logger import get_logger
@@ -180,6 +180,16 @@ def _load_benchmark(config: dict) -> pd.DataFrame:
         df = source.fetch("^NSEI", start=today - timedelta(days=400), end=today)
         if not df.empty:
             log.info("_load_benchmark: fetched %d live rows for ^NSEI", len(df))
+            # Cache to disk so future runs don't need to re-fetch
+            try:
+                from storage.parquet_store import write_parquet
+                processed_dir.mkdir(parents=True, exist_ok=True)
+                write_parquet(benchmark_path, df)
+                log.info("_load_benchmark: cached benchmark → %s", benchmark_path)
+            except Exception as write_exc:
+                log.warning(
+                    "_load_benchmark: could not cache benchmark to disk (%s)", write_exc
+                )
             return df
     except Exception as exc:
         log.warning("_load_benchmark: live fetch failed (%s) — returning empty", exc)
@@ -197,15 +207,18 @@ def run_daily(ctx: RunContext) -> dict:
     Steps
     -----
     1.  resolve_symbols                → universe + watchlist
-    2.  fetch_universe_batch           → today's OHLCV per symbol
-    3.  Append OHLCV to processed store (per-symbol; failures skipped)
+    2.  fetch_universe_batch (5d)      → today's OHLCV per symbol (batch)
+    3.  Smart OHLCV persist            → new symbols: bootstrap full history via
+                                         individual fetch + write_parquet;
+                                         gap > 7d: gap-fill fetch + append_row;
+                                         up-to-date: append today's batch data
     4.  Feature store bootstrap/update  (per-symbol; failures skipped)
     5.  Load benchmark_df + symbol_info
     6.  run_screen                     → list[SEPAResult]
     7.  persist_results                → SQLite upsert
     8.  generate_csv_report            (non-critical)
     9.  generate_html_report           (non-critical)
-    10. generate_batch_charts          (non-critical)
+    10. generate_batch_charts          (non-critical; reads full parquet history)
     11. Filter results via should_alert (non-critical)
     12. send_daily_watchlist           (non-critical)
     13. record_alert per sent symbol   (non-critical)
@@ -274,43 +287,151 @@ def run_daily(ctx: RunContext) -> dict:
             len(universe), len(watchlist_symbols),
         )
 
+        # RS Rating MUST always be computed against the full Nifty 500 universe
+        # (not the scope-filtered list) so percentile ranks are valid 0–99 scores
+        # relative to all traded stocks — exactly as PROJECT_DESIGN.md specifies.
+        # When scope="watchlist", run_symbols.all only contains watchlist symbols,
+        # which would produce meaningless single-digit RS values within a tiny pool.
+        if ctx.scope == "watchlist" and run_symbols.universe:
+            rs_universe: list[str] = list(
+                dict.fromkeys(run_symbols.universe + watchlist_symbols)
+            )
+            log.info(
+                "Step 1 (RS fix): scope=watchlist — using full universe (%d symbols) "
+                "for RS computation instead of watchlist-only (%d symbols)",
+                len(rs_universe), len(universe),
+            )
+        else:
+            rs_universe = universe
+
         # ── Step 2: Fetch today's OHLCV via the configured source ───────────
-        log.info("Step 2 — fetch_universe_batch  symbols=%d", len(universe))
+        # Batch-fetch last 5 days for all symbols.  This gives the screener
+        # and paper-trading current prices without N individual HTTP calls.
+        # Step 3 below handles new / gap symbols with targeted individual fetches.
+        log.info("Step 2 — fetch_universe_batch (5d)  symbols=%d", len(universe))
         source = source_factory.get_source(config)
         ohlcv_data: dict[str, pd.DataFrame] = source.fetch_universe_batch(
             universe, period="5d"
         )
         log.info("Step 2 complete: %d/%d symbols fetched", len(ohlcv_data), len(universe))
 
-        # ── Step 3: Append OHLCV rows to data/processed/{symbol}.parquet ────
-        log.info("Step 3 — append OHLCV to processed store")
+        # ── Step 3: Smart OHLCV persist to data/processed/{symbol}.parquet ──
+        # Decision per symbol:
+        #   • Parquet missing / empty  → bootstrap: individual fetch (bootstrap_years
+        #     of history) then write_parquet.
+        #   • Gap > 7 days             → gap-fill: individual fetch from last_date+1
+        #     then append_row.
+        #   • Up-to-date (gap ≤ 7d)   → normal daily append with today's batch data.
+        #
+        # ohlcv_data_full collects the most-recent df per symbol for paper trading
+        # current prices (Step 7b).  Chart generation (Step 10) reads directly from
+        # the parquet files so charts always show the full stored history.
+        log.info("Step 3 — smart OHLCV persist  universe=%d", len(universe))
         processed_dir = _get_processed_dir(config)
         processed_dir.mkdir(parents=True, exist_ok=True)
 
-        # ohlcv_data_full is the union of all successfully stored OHLCV frames —
-        # passed later to generate_batch_charts so charts are not silently empty.
+        bootstrap_years: int = int(config.get("data", {}).get("bootstrap_years", 5))
         ohlcv_data_full: dict[str, pd.DataFrame] = {}
+        _step3_bootstrapped = _step3_gap_filled = _step3_appended = _step3_skipped = _step3_failed = 0
 
-        for symbol, df in ohlcv_data.items():
-            if df is None or df.empty:
-                log.warning("Step 3: empty OHLCV for %s — skipping", symbol)
-                continue
+        for symbol in universe:
             parquet_path = processed_dir / f"{symbol}.parquet"
-            try:
+            df_today = ohlcv_data.get(symbol)          # 5-day batch result (may be None)
+
+            # ── Classify this symbol ────────────────────────────────────────
+            is_new   = not parquet_path.exists()
+            last_date = None
+            if not is_new:
+                last_date = get_last_date(parquet_path)
+                if last_date is None:
+                    is_new = True          # parquet exists but is empty
+
+            # ── Branch: new symbol → bootstrap full history ─────────────────
+            if is_new:
+                hist_start = run_date - timedelta(days=bootstrap_years * 365)
+                log.info(
+                    "Step 3: new symbol %s — bootstrapping %d years from %s",
+                    symbol, bootstrap_years, hist_start,
+                )
+                try:
+                    df_hist = source.fetch(symbol, start=hist_start, end=run_date)
+                except Exception as exc:
+                    log.warning("Step 3: bootstrap fetch(%s) failed: %s", symbol, exc)
+                    df_hist = pd.DataFrame()
+
+                if not df_hist.empty:
+                    if not ctx.dry_run:
+                        try:
+                            write_parquet(parquet_path, df_hist)
+                        except Exception as exc:
+                            log.warning("Step 3: write_parquet(%s) failed: %s", symbol, exc)
+                            _step3_failed += 1
+                            continue
+                    ohlcv_data_full[symbol] = df_hist
+                    _step3_bootstrapped += 1
+                elif df_today is not None and not df_today.empty:
+                    # Bootstrap returned nothing (very new listing): fall back to batch data
+                    if not ctx.dry_run:
+                        try:
+                            write_parquet(parquet_path, df_today)
+                        except Exception as exc:
+                            log.warning("Step 3: write_parquet(%s) fallback failed: %s", symbol, exc)
+                    ohlcv_data_full[symbol] = df_today
+                    _step3_bootstrapped += 1
+                else:
+                    log.warning("Step 3: no data available for new symbol %s — skipping", symbol)
+                    _step3_failed += 1
+
+            # ── Branch: existing symbol with a significant data gap ──────────
+            elif (run_date - last_date.date()).days > 7:
+                gap_start = last_date.date() + timedelta(days=1)
+                log.info(
+                    "Step 3: gap-fill %s from %s → %s (%d days)",
+                    symbol, gap_start, run_date, (run_date - last_date.date()).days,
+                )
+                try:
+                    df_gap = source.fetch(symbol, start=gap_start, end=run_date)
+                except Exception as exc:
+                    log.warning("Step 3: gap-fill fetch(%s) failed: %s — using batch", symbol, exc)
+                    df_gap = df_today
+
+                if df_gap is not None and not df_gap.empty:
+                    if not ctx.dry_run:
+                        try:
+                            append_row(parquet_path, df_gap)
+                        except FeatureStoreOutOfSyncError:
+                            log.debug("Step 3: %s gap already filled — skipping", symbol)
+                    ohlcv_data_full[symbol] = df_gap
+                    _step3_gap_filled += 1
+                else:
+                    log.warning("Step 3: no gap-fill data for %s — skipping", symbol)
+                    _step3_failed += 1
+
+            # ── Branch: up-to-date — normal daily append ────────────────────
+            else:
+                if df_today is None or df_today.empty:
+                    log.warning("Step 3: empty batch data for %s — skipping", symbol)
+                    _step3_skipped += 1
+                    continue
                 if not ctx.dry_run:
                     try:
-                        append_row(parquet_path, df)
+                        append_row(parquet_path, df_today)
+                        _step3_appended += 1
                     except FeatureStoreOutOfSyncError:
-                        # Today's rows already present — idempotent re-run
                         log.debug("Step 3: %s already up-to-date — skipping append", symbol)
-                ohlcv_data_full[symbol] = df
-            except Exception as exc:
-                # Per-symbol failure: log + skip; do NOT abort
-                log.warning(
-                    "Step 3: append_row(%s) failed: %s — skipping symbol", symbol, exc
-                )
+                        _step3_skipped += 1
+                    except Exception as exc:
+                        log.warning("Step 3: append_row(%s) failed: %s", symbol, exc)
+                        _step3_failed += 1
+                        continue
+                ohlcv_data_full[symbol] = df_today
 
-        log.info("Step 3 complete: %d/%d symbols in processed store", len(ohlcv_data_full), len(universe))
+        log.info(
+            "Step 3 complete: %d bootstrapped, %d gap-filled, %d appended, "
+            "%d skipped, %d failed (universe=%d)",
+            _step3_bootstrapped, _step3_gap_filled, _step3_appended,
+            _step3_skipped, _step3_failed, len(universe),
+        )
 
         # ── Step 4: Feature store bootstrap/update ──────────────────────────
         log.info("Step 4 — feature store update/bootstrap  universe=%d", len(universe))
@@ -385,7 +506,7 @@ def run_daily(ctx: RunContext) -> dict:
                 log.warning("Step 5b: news fetch skipped: %s", _exc)
 
         # ── Step 6: Run the SEPA screener ───────────────────────────────────
-        log.info("Step 6 — run_screen  universe=%d", len(universe))
+        log.info("Step 6 — run_screen  universe=%d  rs_universe=%d", len(universe), len(rs_universe))
         results = run_screen(
             universe=universe,
             run_date=run_date,
@@ -395,6 +516,7 @@ def run_daily(ctx: RunContext) -> dict:
             fundamentals_map=fundamentals_map,
             news_scores=news_scores_map,
             force_symbols=watchlist_symbols,   # always score watchlist symbols
+            rs_universe=rs_universe,           # full Nifty 500 for valid percentile RS
         )
 
         rep = get_report_summary(results)
@@ -477,13 +599,22 @@ def run_daily(ctx: RunContext) -> dict:
         # Step 10 — Batch charts
         chart_paths: dict[str, str] = {}
         try:
-            # vcp_data would ideally be populated by extracting VCPMetrics from
-            # SEPAResult objects; for now we pass an empty dict and let
-            # generate_batch_charts skip VCP overlays gracefully.
+            # Load full OHLCV history from parquet for each result so charts
+            # show months/years of data rather than only the 5-day batch window.
+            ohlcv_for_charts: dict[str, pd.DataFrame] = {}
+            for r in results:
+                ppath = processed_dir / f"{r.symbol}.parquet"
+                df_full = read_parquet(ppath)
+                if not df_full.empty:
+                    ohlcv_for_charts[r.symbol] = df_full
+                elif r.symbol in ohlcv_data_full:
+                    # Parquet missing but we have batch data — use as fallback
+                    ohlcv_for_charts[r.symbol] = ohlcv_data_full[r.symbol]
+
             vcp_data: dict = {}
             chart_paths = generate_batch_charts(
                 results=results,
-                ohlcv_data=ohlcv_data_full,
+                ohlcv_data=ohlcv_for_charts,
                 vcp_data=vcp_data,
                 output_dir=output_dir,
                 run_date=run_date,

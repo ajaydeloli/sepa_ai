@@ -94,6 +94,9 @@ class StockResultSchema(BaseModel):
     rs_rating: int
     news_score: float | None = None
     fundamental_pass: bool = False
+    fundamental_score: int = 50   # 0–100; mirrors FundamentalResult.score;
+                                  # defaults to 50 (neutral) matching backend behaviour
+                                  # when fundamentals were not evaluated
     # API-layer extras — not present on SEPAResult; default to safe values
     is_watchlist: bool = False
     trend_template_details: TrendTemplateSchema | None = None

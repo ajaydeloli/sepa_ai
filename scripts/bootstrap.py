@@ -45,9 +45,6 @@ from utils.logger import get_logger  # noqa: E402
 
 log = get_logger("bootstrap")
 
-_HISTORY_YEARS = 5
-
-
 def _load_config(path: Path) -> dict:
     with path.open("r", encoding="utf-8") as fh:
         return yaml.safe_load(fh)
@@ -95,6 +92,10 @@ def main() -> None:
     args = _parse_args()
 
     config = _load_config(_ROOT / "config" / "settings.yaml")
+
+    # ── History depth ──────────────────────────────────────────────────────
+    # Reads from config so bootstrap_years can be changed without touching code.
+    bootstrap_years: int = int(config.get("data", {}).get("bootstrap_years", 5))
 
     # ── Output directory ───────────────────────────────────────────────────
     processed_dir = Path(config.get("data", {}).get("processed_dir", "data/processed"))
@@ -151,9 +152,9 @@ def main() -> None:
             log.error("Invalid --start-date %r — expected YYYY-MM-DD.", args.start_date)
             sys.exit(1)
     else:
-        start_date = end_date - timedelta(days=_HISTORY_YEARS * 365)
+        start_date = end_date - timedelta(days=bootstrap_years * 365)
 
-    log.info("Date range: %s → %s", start_date, end_date)
+    log.info("Date range: %s → %s (%d years max)", start_date, end_date, bootstrap_years)
 
     source = YFinanceSource()
     success: int = 0
@@ -216,6 +217,27 @@ def main() -> None:
                 "Progress: %d/%d processed (success=%d, failed=%d, skipped=%d)",
                 i, len(symbols), success, failed, skipped,
             )
+
+    # ── Benchmark (Nifty index) ─────────────────────────────────────────────
+    # The RS rating engine needs a benchmark DataFrame for relative-strength
+    # computation.  Fetch ^NSEI and save it as NIFTY500.parquet so that
+    # _load_benchmark() in pipeline/runner.py finds it on the first run.
+    benchmark_path = processed_dir / "NIFTY500.parquet"
+    if not benchmark_path.exists() or args.force:
+        log.info("Fetching benchmark (^NSEI) → %s …", benchmark_path.name)
+        try:
+            bm_df = source.fetch("^NSEI", start=start_date, end=end_date)
+            if bm_df.empty:
+                log.warning("Benchmark fetch returned empty DataFrame — skipping.")
+            else:
+                write_parquet(benchmark_path, bm_df)
+                log.info(
+                    "Benchmark written: %d rows → %s", len(bm_df), benchmark_path.name
+                )
+        except Exception as exc:
+            log.warning("Benchmark fetch/write failed: %s", exc)
+    else:
+        log.info("Benchmark already exists at %s — skipping (use --force to refresh).", benchmark_path.name)
 
     # ── Final summary ──────────────────────────────────────────────────────
     total = len(symbols)

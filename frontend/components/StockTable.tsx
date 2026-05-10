@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import useSWR from "swr";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import type { StockResult } from "@/lib/types";
@@ -12,7 +11,7 @@ import { Bookmark, BookmarkCheck, ChevronDown, ChevronUp } from "lucide-react";
 type SortKey = "score" | "rs_rating" | "reward_risk_ratio" | "symbol" | "conditions_met";
 
 export interface StockTableProps {
-  /** Seed data — also used as SWR fallback while polling. */
+  /** Seed data rendered directly in the table. */
   initialData: StockResult[];
   /** Show read-only ★ badge for watchlisted stocks. */
   showWatchlistBadge?: boolean;
@@ -20,8 +19,6 @@ export interface StockTableProps {
   showWatchlistToggle?: boolean;
   /** Called when a row is clicked; defaults to router.push(/screener/{symbol}). */
   onRowClick?: (symbol: string) => void;
-  /** SWR key used for polling — omit to disable live refresh. */
-  swrKey?: string;
   /** Called after a watchlist mutation so the parent can revalidate. */
   onMutate?: () => void;
 }
@@ -31,7 +28,6 @@ export default function StockTable({
   showWatchlistBadge,
   showWatchlistToggle,
   onRowClick,
-  swrKey,
   onMutate,
 }: StockTableProps) {
   const router = useRouter();
@@ -39,13 +35,7 @@ export default function StockTable({
   const [sortAsc, setSortAsc]  = useState(false);
   const [toggling, setToggling] = useState<string | null>(null);
 
-  // Live-poll via SWR when a key is provided; fall back to initialData
-  const { data: live, mutate } = useSWR(
-    swrKey ?? null,
-    () => api.getTopStocks({ limit: 200 }),
-    { refreshInterval: 60_000, fallbackData: undefined },
-  );
-  const stocks: StockResult[] = live?.data ?? initialData;
+  const stocks: StockResult[] = initialData;
 
   // ── Sort ──────────────────────────────────────────────────────────────────
   const handleSort = (key: SortKey) => {
@@ -66,7 +56,6 @@ export default function StockTable({
     try {
       if (s.is_watchlist) await api.removeFromWatchlist(s.symbol);
       else                await api.addToWatchlist(s.symbol);
-      mutate();
       onMutate?.();
     } finally { setToggling(null); }
   };
@@ -160,14 +149,14 @@ export default function StockTable({
               <td className="px-3 py-2 text-center hidden sm:table-cell">
                 {s.vcp_qualified
                   ? <span className="text-green-400 font-bold">✓</span>
-                  : <span className="text-slate-700">·</span>}
+                  : <span className="text-slate-500">–</span>}
               </td>
 
               {/* Breakout — 🔴 label */}
               <td className="px-3 py-2 text-center hidden sm:table-cell">
                 {s.breakout_triggered
                   ? <span title="Breakout triggered">🔴</span>
-                  : <span className="text-slate-700">·</span>}
+                  : <span className="text-slate-500">–</span>}
               </td>
 
               {/* Price cols — hidden on mobile */}

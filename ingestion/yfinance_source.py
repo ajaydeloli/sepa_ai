@@ -40,7 +40,13 @@ _REQUIRED_COLS = {"open", "high", "low", "close", "volume"}
 
 
 def _add_ns(symbol: str) -> str:
-    """Append ``.NS`` if not already present."""
+    """Append ``.NS`` if not already present.
+
+    Index tickers (e.g. ``^NSEI``, ``^CRSLDX``) are returned unchanged because
+    Yahoo Finance does NOT use the ``.NS`` suffix for index symbols.
+    """
+    if symbol.startswith("^"):
+        return symbol
     return symbol if symbol.endswith(_NS_SUFFIX) else symbol + _NS_SUFFIX
 
 

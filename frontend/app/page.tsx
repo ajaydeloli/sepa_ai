@@ -31,7 +31,7 @@ export default function Dashboard() {
     refreshInterval: 60_000,
   });
   const { data: top, isLoading } = useSWR("top-stocks", () =>
-    api.getTopStocks({ quality: "A+", limit: 5 }),
+    api.getTopStocks({ limit: 20 }),
   );
   const { data: vcpData }   = useSWR("vcp-count",   () => api.getVCPStocks({ limit: 200 }));
   const { data: trendData } = useSWR("trend-count", () => api.getTrendStocks({ limit: 200 }));
@@ -40,7 +40,9 @@ export default function Dashboard() {
     ? new Date(health.data.last_run).toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })
     : "—";
 
-  const aPlus = top?.data?.filter((s) => s.setup_quality === "A+").length ?? "—";
+  const aPlusCount  = top?.data?.filter((s) => s.setup_quality === "A+").length ?? 0;
+  const aCount      = top?.data?.filter((s) => s.setup_quality === "A").length  ?? 0;
+  const aPlusAndA   = top?.data ? aPlusCount + aCount : ("—" as string | number);
 
   return (
     <div className="space-y-6">
@@ -67,10 +69,10 @@ export default function Dashboard() {
         <SkeletonCards count={4} />
       ) : (
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-          <StatCard label="Last Run"      value={lastRun}                          sub="Pipeline timestamp"     />
-          <StatCard label="A+ Setups"     value={aPlus}                            sub="Today's best"           />
-          <StatCard label="VCP Qualified" value={vcpData?.data?.length  ?? "—"}    sub="With base pattern"      />
-          <StatCard label="Trend Pass"    value={trendData?.data?.length ?? "—"}   sub="8-condition template"   />
+          <StatCard label="Last Run"      value={lastRun}                          sub="Pipeline timestamp"          />
+          <StatCard label="A+ / A Setups" value={aPlusAndA}                        sub={`A+: ${aPlusCount}  ·  A: ${aCount}`} />
+          <StatCard label="VCP Qualified" value={vcpData?.data?.length  ?? "—"}    sub="With base pattern"           />
+          <StatCard label="Trend Pass"    value={trendData?.data?.length ?? "—"}   sub="8-condition template"        />
         </div>
       )}
 
@@ -91,9 +93,9 @@ export default function Dashboard() {
 
         {isLoading ? (
           <SkeletonTable rows={5} />
-        ) : top?.data?.length ? (
+        ) : top?.data?.filter((s) => s.setup_quality === "A+" || s.setup_quality === "A").length ? (
           <StockTable
-            initialData={top.data}
+            initialData={top.data.filter((s) => s.setup_quality === "A+" || s.setup_quality === "A")}
             showWatchlistBadge
           />
         ) : (

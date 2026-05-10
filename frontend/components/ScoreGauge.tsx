@@ -20,16 +20,26 @@ function scoreColor(score: number): string {
   return "#4ade80";                  // green-400
 }
 
-/** Convert a 0-1 fraction to an SVG arc path on a 200×100 viewbox semi-circle. */
+/** Convert a 0-1 fraction to an SVG arc path on a 200×100 viewbox semi-circle.
+ *
+ * The semicircle runs from the left end (angle=180°) clockwise through the
+ * top to the right end (angle=360°/0°).  The end angle is therefore:
+ *   endAngle = π + fraction × π  =  π × (1 + fraction)
+ *
+ * Previous code used  π × (1 − fraction)  which placed the endpoint *below*
+ * the viewbox for any fractional value, causing the arc to wrap around 264°+
+ * and appear fully filled regardless of the actual score.
+ *
+ * Because we always sweep ≤ 180°, largeArc is always 0.
+ */
 function arcPath(fraction: number, cx: number, cy: number, r: number): string {
   const startAngle = Math.PI;
-  const endAngle   = Math.PI * (1 - fraction);
+  const endAngle   = Math.PI * (1 + fraction);   // FIX: was (1 - fraction)
   const x1 = cx + r * Math.cos(startAngle);
   const y1 = cy + r * Math.sin(startAngle);
   const x2 = cx + r * Math.cos(endAngle);
   const y2 = cy + r * Math.sin(endAngle);
-  const largeArc = fraction > 0.5 ? 1 : 0;
-  return `M ${x1} ${y1} A ${r} ${r} 0 ${largeArc} 1 ${x2} ${y2}`;
+  return `M ${x1} ${y1} A ${r} ${r} 0 0 1 ${x2} ${y2}`;  // largeArc always 0
 }
 
 const SIZE_MAP = {
