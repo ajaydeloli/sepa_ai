@@ -2,7 +2,7 @@ universe:
   source: "yfinance"
   universe_provider: "nsepython"
   universe_csv: ""
-  index: "nifty500"
+  index: "nifty500"      # "nifty500" or "nse_all"
   min_price: 50
   min_avg_volume: 100000
   min_market_cap_cr: 500
@@ -15,7 +15,7 @@ data:
   news_dir: "data/news"
   # Maximum years of history to fetch when bootstrapping a new/missing symbol.
   # For newly listed symbols, whatever data is available will be fetched regardless.
-  bootstrap_years: 5
+  bootstrap_years: 2
 
 watchlist:
   always_scan: true
@@ -27,6 +27,25 @@ watchlist:
 stage:
   ma200_slope_lookback: 20
   ma50_slope_lookback: 10
+
+rs:
+  # IBD-style multi-period weighted return (Minervini's preferred RS Rating source).
+  # Formula: rs_raw = 0.4*(C/C_63) + 0.2*(C/C_126) + 0.2*(C/C_189) + 0.2*(C/C_252)
+  # The most-recent quarter is double-weighted (0.4) to emphasise recent momentum.
+  # rs_raw is then percentile-ranked across the full universe to produce a 0-99 score.
+  # No benchmark division — stocks are ranked purely against each other.
+  period_q1: 63     # 3-month lookback  — weight 0.4 (double-weighted, most recent)
+  period_q2: 126    # 6-month lookback  — weight 0.2
+  period_q3: 189    # 9-month lookback  — weight 0.2
+  period_q4: 252    # 12-month lookback — weight 0.2
+  # Minimum trading days required before a symbol can receive a valid RS rating.
+  # Must be >= period_q4 + small buffer.  Symbols below this threshold get rating=0.
+  min_rows: 254
+  # Absolute minimum for the degraded IPO formula (one full quarter + buffer).
+  # IPOs with >= min_ipo_rows but < min_rows receive a rating computed from
+  # whatever quarterly windows are available, with weights renormalised to 1.0.
+  # Below min_ipo_rows the symbol is too new for any meaningful RS — rating=0.
+  min_ipo_rows: 65
 
 trend_template:
   pct_above_52w_low: 25.0
@@ -85,8 +104,14 @@ backtest:
 
 llm:
   enabled: true
-  provider: "groq"
-  model: "llama-3.3-70b-versatile"
+  # Supported providers: groq | anthropic | openai | openrouter | nvidia | ollama
+  # nvidia: set NVIDIA_API_KEY in .env  (free tier at https://build.nvidia.com)
+  #         recommended models:
+  #           meta/llama-3.3-70b-instruct        (default, free tier)
+  #           mistralai/mistral-7b-instruct-v0.3  (fastest)
+  #           nvidia/llama-3.1-nemotron-70b-instruct (highest quality)
+  provider: "nvidia"
+  model: "meta/llama-3.3-70b-instruct"    # llama-3.3-70b-versatile
   max_tokens: 350
   only_for_quality: ["A+", "A"]
 

@@ -23,7 +23,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from api.auth import require_read_key
-from api.deps import get_db, get_run_date
+from api.deps import get_config, get_db, get_run_date
 from api.schemas.common import APIResponse
 from api.schemas.stock import StockHistorySchema, StockResultSchema, OHLCVResponseSchema
 from storage.sqlite_store import SQLiteStore
@@ -80,6 +80,7 @@ def _parse_row(row: dict[str, Any]) -> StockResultSchema:
         "symbol", "run_date", "score", "setup_quality", "stage",
         "trend_template_pass", "vcp_qualified", "breakout_triggered",
         "rs_rating", "entry_price", "stop_loss", "risk_pct",
+        "llm_brief",
     ):
         val = row.get(key)
         if val is not None:
@@ -336,3 +337,169 @@ async def get_stock_ohlcv(
         sma200=_ma_series("sma_200"),
     )
     return APIResponse(success=True, data=data)
+
+
+@router.post("/{symbol}/brief", response_model=APIResponse[str])
+async def generate_stock_brief(
+    symbol: str,
+    date: str | None = None,
+    db: SQLiteStore = Depends(get_db),
+    config: dict = Depends(get_config),
+) -> APIResponse[str]:
+    """Generate (or regenerate) an AI brief for a single symbol on demand.
+
+    Reconstructs the SEPAResult from the stored result_json, loads the last
+    5 OHLCV rows from the feature parquet, calls generate_trade_brief(), and
+    upserts the result into screen_results.llm_brief.
+
+    Returns 404 when no screening result exists for the symbol/date.
+    Returns 503 when no LLM provider is configured.
+    Returns 422 when the symbol's quality grade does not qualify for a brief.
+    """
+    import json
+    from datetime import datetime as _dt
+
+    from llm.explainer import generate_trade_brief
+    from llm.llm_client import get_llm_client
+    from rules.scorer import SEPAResult
+    from storage.parquet_store import read_last_n_rows
+
+    sym = symbol.upper()
+    effective_date = _resolve_date(date)
+
+    row = db.get_result(sym, effective_date)
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No screening result for '{sym}' on {effective_date}.",
+        )
+
+    # ── Reconstruct SEPAResult from stored JSON ──────────────────────────
+    raw: dict = {}
+    result_json_str = row.get("result_json")
+    if result_json_str:
+        try:
+            raw = json.loads(result_json_str)
+        except (json.JSONDecodeError, TypeError):
+            raw = {}
+
+    # Handle legacy double-encode (nested result_json string)
+    nested = raw.get("result_json")
+    if isinstance(nested, str):
+        try:
+            for k, v in json.loads(nested).items():
+                if k != "result_json" and k not in raw:
+                    raw[k] = v
+        except Exception:
+            pass
+
+    # Flat DB columns always win over JSON for core indexed fields
+    for key in (
+        "symbol", "score", "setup_quality", "stage", "rs_rating",
+        "entry_price", "stop_loss", "risk_pct",
+        "trend_template_pass", "vcp_qualified", "breakout_triggered",
+    ):
+        val = row.get(key)
+        if val is not None:
+            raw[key] = val
+
+    run_date_raw = raw.get("run_date", str(effective_date))
+    try:
+        run_date_obj = _dt.strptime(str(run_date_raw)[:10], "%Y-%m-%d").date()
+    except ValueError:
+        run_date_obj = effective_date
+
+    sepa_result = SEPAResult(
+        symbol=raw.get("symbol", sym),
+        run_date=run_date_obj,
+        stage=int(raw.get("stage", 1)),
+        stage_label=str(raw.get("stage_label", "")),
+        stage_confidence=int(raw.get("stage_confidence", 0)),
+        trend_template_pass=bool(raw.get("trend_template_pass")),
+        trend_template_details=raw.get("trend_template_details") or {},
+        conditions_met=int(raw.get("conditions_met", 0)),
+        fundamental_pass=bool(raw.get("fundamental_pass")),
+        fundamental_details=raw.get("fundamental_details") or {},
+        vcp_qualified=bool(raw.get("vcp_qualified")),
+        vcp_details=raw.get("vcp_details") or {},
+        breakout_triggered=bool(raw.get("breakout_triggered")),
+        entry_price=raw.get("entry_price"),
+        stop_loss=raw.get("stop_loss"),
+        risk_pct=raw.get("risk_pct"),
+        target_price=raw.get("target_price"),
+        reward_risk_ratio=raw.get("reward_risk_ratio"),
+        rs_rating=int(raw.get("rs_rating", 0)),
+        sector_bonus=int(raw.get("sector_bonus", 0)),
+        news_score=raw.get("news_score"),
+        setup_quality=raw.get("setup_quality", "FAIL"),  # type: ignore[arg-type]
+        score=int(raw.get("score", 0)),
+    )
+
+    # ── Load last 5 OHLCV rows from feature/processed parquet ────────────
+    from pathlib import Path
+    import pandas as pd
+
+    feature_path   = Path("data/features")  / f"{sym}.parquet"
+    processed_path = Path("data/processed") / f"{sym}.parquet"
+    ohlcv_tail = read_last_n_rows(feature_path, 5)
+    if ohlcv_tail.empty:
+        ohlcv_tail = read_last_n_rows(processed_path, 5)
+
+    # ── Acquire LLM client ───────────────────────────────────────────────
+    client = get_llm_client(config)
+    if client is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "No LLM provider is available. "
+                "Set a provider API key (e.g. GROQ_API_KEY) in your .env file "
+                "and restart the server."
+            ),
+        )
+
+    # ── Generate and validate brief ──────────────────────────────────────
+    # Check the quality gate explicitly first so we can tell the caller
+    # *why* the brief is None: quality gate vs. LLM call failure.
+    only_for = config.get("llm", {}).get("only_for_quality", ["A+", "A"])
+    if sepa_result.setup_quality not in only_for:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"'{sym}' has quality {sepa_result.setup_quality!r} — "
+                f"AI briefs are only produced for: {only_for}."
+            ),
+        )
+
+    brief = generate_trade_brief(sepa_result, ohlcv_tail, config, client=client)
+    if brief is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "LLM call succeeded but returned an unusable response. "
+                "Check server logs for details. "
+                "If using Ollama, ensure the model is pulled: "
+                f"ollama pull {config.get('llm', {}).get('model', 'llama3.2')}"
+            ),
+        )
+
+    # ── Persist brief into screen_results.llm_brief ──────────────────────
+    db.save_result(
+        effective_date,
+        {
+            "symbol":               sym,
+            "stage":                row.get("stage"),
+            "score":                row.get("score"),
+            "setup_quality":        row.get("setup_quality"),
+            "trend_template_pass":  row.get("trend_template_pass"),
+            "vcp_qualified":        row.get("vcp_qualified"),
+            "breakout_triggered":   row.get("breakout_triggered"),
+            "rs_rating":            row.get("rs_rating"),
+            "entry_price":          row.get("entry_price"),
+            "stop_loss":            row.get("stop_loss"),
+            "risk_pct":             row.get("risk_pct"),
+            "result_json":          row.get("result_json"),
+            "llm_brief":            brief,
+        },
+    )
+
+    return APIResponse(success=True, data=brief)

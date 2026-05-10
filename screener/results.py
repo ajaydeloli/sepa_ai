@@ -45,6 +45,7 @@ def persist_results(
     results: list[SEPAResult],
     db: SQLiteStore,
     run_date: date,
+    llm_briefs: dict[str, str] | None = None,
 ) -> None:
     """Write a list of SEPAResult objects to SQLite using upsert semantics.
 
@@ -59,7 +60,12 @@ def persist_results(
         Open SQLiteStore instance (schema must already exist).
     run_date:
         Date of the screening run — used as the partition key.
+    llm_briefs:
+        Optional mapping of symbol → LLM-generated brief text produced by
+        ``generate_batch_briefs()``.  When provided the brief is stored in the
+        ``llm_brief`` column so the API can surface it without regenerating it.
     """
+    briefs = llm_briefs or {}
     for result in results:
         d: dict[str, Any] = dataclasses.asdict(result)
         # Coerce date fields to str so json.dumps doesn't choke
@@ -77,6 +83,7 @@ def persist_results(
             "stop_loss":            result.stop_loss,
             "risk_pct":             result.risk_pct,
             "result_json":          json.dumps(d, default=str),
+            "llm_brief":            briefs.get(result.symbol),
         }
         db.save_result(run_date, row_dict)
 

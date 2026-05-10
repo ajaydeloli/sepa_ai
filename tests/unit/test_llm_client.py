@@ -20,6 +20,7 @@ from llm.llm_client import (
     CLIENTS,
     AnthropicClient,
     GroqClient,
+    NvidiaClient,
     OllamaClient,
     OpenAIClient,
     OpenRouterClient,
@@ -104,13 +105,25 @@ def test_complete_with_fallback_returns_actual_response_on_success(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# 4. OllamaClient.is_available() – True on reachable, False on OSError
+# 4. OllamaClient.is_available() — socket probe + model check
 # ---------------------------------------------------------------------------
 
-def test_ollama_is_available_returns_true_when_socket_connects():
+def _mock_tags_response(models: list[str]) -> MagicMock:
+    """Build a fake requests.Response for GET /api/tags."""
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {
+        "models": [{"name": f"{m}:latest"} for m in models]
+    }
+    return mock_resp
+
+
+def test_ollama_is_available_returns_true_when_socket_connects_and_model_pulled():
+    """Both socket probe and /api/tags model check must pass."""
     mock_sock = MagicMock()
-    with patch("socket.create_connection", return_value=mock_sock):
-        client = OllamaClient(config={})
+    with patch("socket.create_connection", return_value=mock_sock), \
+         patch("requests.get", return_value=_mock_tags_response(["llama3.2"])):
+        client = OllamaClient(config={"llm": {"model": "llama3.2"}})
         assert client.is_available() is True
     mock_sock.close.assert_called_once()
 
@@ -128,6 +141,37 @@ def test_ollama_is_available_returns_false_on_timeout():
     ):
         client = OllamaClient(config={})
         assert client.is_available() is False
+
+
+def test_ollama_is_available_returns_false_when_model_not_pulled():
+    """Socket connects but the configured model is absent from /api/tags."""
+    mock_sock = MagicMock()
+    with patch("socket.create_connection", return_value=mock_sock), \
+         patch("requests.get", return_value=_mock_tags_response(["mistral"])):
+        # default model is llama3.2 — not in the pulled list
+        client = OllamaClient(config={"llm": {"model": "llama3.2"}})
+        assert client.is_available() is False
+
+
+def test_ollama_is_available_returns_false_when_tags_endpoint_fails():
+    """Socket connects but /api/tags returns a non-200 status."""
+    mock_sock = MagicMock()
+    mock_resp = MagicMock()
+    mock_resp.status_code = 500
+    with patch("socket.create_connection", return_value=mock_sock), \
+         patch("requests.get", return_value=mock_resp):
+        client = OllamaClient(config={})
+        assert client.is_available() is False
+
+
+def test_ollama_is_available_strips_tag_suffix_for_model_match():
+    """'llama3.2:latest' in /api/tags should match configured model 'llama3.2'."""
+    mock_sock = MagicMock()
+    with patch("socket.create_connection", return_value=mock_sock), \
+         patch("requests.get", return_value=_mock_tags_response(["llama3.2"])):
+        # Ollama returns "llama3.2:latest" — helper adds :latest suffix
+        client = OllamaClient(config={"llm": {"model": "llama3.2:latest"}})
+        assert client.is_available() is True
 
 
 # ---------------------------------------------------------------------------
@@ -152,6 +196,7 @@ def test_all_clients_instantiate_with_empty_env(client_cls, monkeypatch):
     (AnthropicClient,   "ANTHROPIC_API_KEY"),
     (OpenAIClient,      "OPENAI_API_KEY"),
     (OpenRouterClient,  "OPENROUTER_API_KEY"),
+    (NvidiaClient,      "NVIDIA_API_KEY"),
 ])
 def test_cloud_clients_is_available_false_without_key(client_cls, env_var, monkeypatch):
     monkeypatch.delenv(env_var, raising=False)
@@ -164,6 +209,7 @@ def test_cloud_clients_is_available_false_without_key(client_cls, env_var, monke
     (AnthropicClient,   "ANTHROPIC_API_KEY"),
     (OpenAIClient,      "OPENAI_API_KEY"),
     (OpenRouterClient,  "OPENROUTER_API_KEY"),
+    (NvidiaClient,      "NVIDIA_API_KEY"),
 ])
 def test_cloud_clients_complete_raises_unavailable_without_key(
     client_cls, env_var, monkeypatch
@@ -235,3 +281,63 @@ def test_session_tokens_accumulate_across_calls(monkeypatch):
     assert after_second > after_first, (
         "Prompt counter should grow with each call"
     )
+
+
+# ---------------------------------------------------------------------------
+# 7. NvidiaClient — mock complete() and verify token tracking
+# ---------------------------------------------------------------------------
+
+def test_nvidia_complete_mocks_openai_and_tracks_tokens(monkeypatch):
+    """NvidiaClient.complete() calls OpenAI-compat endpoint and tracks tokens."""
+    _reset_session_tokens()
+
+    monkeypatch.setenv("NVIDIA_API_KEY", "nvapi-test")
+    client = NvidiaClient(config={"llm": {"model": "meta/llama-3.3-70b-instruct"}})
+
+    prompt = "Analyse the VCP setup for TCS with Minervini criteria."
+    fake_response = "Stage 2 breakout with 3-contraction VCP; volume confirms the setup."
+
+    mock_choice = MagicMock()
+    mock_choice.message.content = fake_response
+    mock_completion = MagicMock()
+    mock_completion.choices = [mock_choice]
+    mock_instance = MagicMock()
+    mock_instance.chat.completions.create.return_value = mock_completion
+
+    with patch("openai.OpenAI", MagicMock(return_value=mock_instance)):
+        result = client.complete(prompt)
+
+    assert result == fake_response, f"Unexpected response: {result!r}"
+
+    usage = get_session_token_usage()
+    assert usage["prompt"] > 0,     "Prompt token counter should have incremented"
+    assert usage["completion"] > 0, "Completion token counter should have incremented"
+
+
+def test_nvidia_complete_passes_temperature_and_top_p(monkeypatch):
+    """NvidiaClient passes temperature=0.7 and top_p=0.9 to the API call."""
+    monkeypatch.setenv("NVIDIA_API_KEY", "nvapi-test")
+    client = NvidiaClient(config={})
+
+    mock_choice = MagicMock()
+    mock_choice.message.content = "ok"
+    mock_completion = MagicMock()
+    mock_completion.choices = [mock_choice]
+    mock_instance = MagicMock()
+    mock_instance.chat.completions.create.return_value = mock_completion
+    mock_cls = MagicMock(return_value=mock_instance)
+
+    with patch("openai.OpenAI", mock_cls):
+        client.complete("test prompt")
+
+    call_kwargs = mock_instance.chat.completions.create.call_args[1]
+    assert call_kwargs.get("temperature") == 0.7, "Expected temperature=0.7"
+    assert call_kwargs.get("top_p") == 0.9,       "Expected top_p=0.9"
+
+
+def test_nvidia_complete_raises_unavailable_error_without_key(monkeypatch):
+    """complete() raises LLMUnavailableError immediately when key is absent."""
+    monkeypatch.delenv("NVIDIA_API_KEY", raising=False)
+    client = NvidiaClient(config={})
+    with pytest.raises(LLMUnavailableError):
+        client.complete("test")

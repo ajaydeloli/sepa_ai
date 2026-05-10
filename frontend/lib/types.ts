@@ -39,6 +39,21 @@ export interface VCPDetails {
   tightness_score: number | null;
 }
 
+export interface FundamentalDetails {
+  passes: boolean;
+  conditions_met: number;
+  f1_eps_positive: boolean;
+  f2_eps_accelerating: boolean;
+  f3_sales_growth: boolean;
+  f4_roe: boolean;
+  f5_de_ratio: boolean;
+  f6_promoter_holding: boolean;
+  f7_profit_growth: boolean;
+  score: number;
+  hard_fails: string[];
+  values: Record<string, number | boolean | null>;
+}
+
 export type SetupQuality = "A+" | "A" | "B" | "C" | "FAIL";
 
 export interface StockResult {
@@ -64,6 +79,7 @@ export interface StockResult {
   fundamental_pass: boolean;
   /** 0–100 score from FundamentalResult.score; 50 = neutral (not evaluated) */
   fundamental_score: number;
+  fundamental_details: FundamentalDetails | null;
   is_watchlist: boolean;
   trend_template_details: TrendTemplate | null;
   vcp_details: VCPDetails | null;

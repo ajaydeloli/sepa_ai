@@ -89,6 +89,17 @@ export const api = {
   getOHLCV: (symbol: string, days = 90) =>
     apiFetch<OHLCVResponse>(`/api/v1/stocks/${symbol}/ohlcv?days=${days}`),
 
+  /**
+   * Generate (or regenerate) an AI brief for a symbol on demand.
+   * Calls POST /api/v1/stocks/{symbol}/brief and returns the brief text.
+   * Throws on 404 (no result), 503 (no LLM key), or 422 (quality gate).
+   */
+  generateBrief: (symbol: string, date?: string) =>
+    apiFetch<string>(
+      `/api/v1/stocks/${symbol}/brief${date ? `?date=${date}` : ""}`,
+      { method: "POST" },
+    ),
+
   // -- Watchlist ------------------------------------------------------------
 
   /** All symbols currently on the user watchlist with latest results. */

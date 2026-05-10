@@ -393,17 +393,20 @@ def fetch_symbol_news(
 # Public: compute_news_score
 # ---------------------------------------------------------------------------
 
-def compute_news_score(articles: list[dict]) -> float:
+def compute_news_score(articles: list[dict]) -> float | None:
     """Aggregate article sentiments into a -100 to +100 score.
 
     Method: time-decayed weighted average of final_score × 100.
     Articles without a parseable published date are treated as age=0 days
     (i.e. highest weight).
 
-    Returns 0.0 for an empty list.
+    Returns None for an empty list (no articles found for symbol) so callers
+    can distinguish "no coverage" from a genuine zero-sentiment result.
+    The scorer treats None as neutral (50 on the normalised 0–100 scale),
+    identical to the 0.0 path, so scoring behaviour is unchanged.
     """
     if not articles:
-        return 0.0
+        return None
 
     now = datetime.now(tz=timezone.utc)
     _DECAY = 0.9  # per day

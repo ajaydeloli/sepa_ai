@@ -19,6 +19,7 @@ import QualityBadge from "@/components/QualityBadge";
 import ScoreGauge from "@/components/ScoreGauge";
 import TrendTemplateCard from "@/components/TrendTemplateCard";
 import VCPCard from "@/components/VCPCard";
+import FundamentalsCard from "@/components/FundamentalsCard";
 import { CandlestickChart } from "@/components/CandlestickChart";
 
 // ---------------------------------------------------------------------------
@@ -32,7 +33,6 @@ const TABS: { id: Tab; label: string }[] = [
   { id: "fundamentals", label: "Fundamentals" },
   { id: "llm",          label: "AI Brief" },
 ];
-
 // ---------------------------------------------------------------------------
 // Score breakdown config — mirrors backend SCORE_WEIGHTS in rules/scorer.py
 // rs_rating=30, trend=25, vcp=22, volume=10, fundamental=7, news=6
@@ -189,7 +189,25 @@ function HistoryChart({ history }: { history: StockHistoryPoint[] }) {
 // ---------------------------------------------------------------------------
 // Tab content
 // ---------------------------------------------------------------------------
-function TabContent({ tab, stock }: { tab: Tab; stock: StockResult }) {
+function TabContent({ tab, stock, onBriefGenerated }: { tab: Tab; stock: StockResult; onBriefGenerated: () => void }) {
+  const [generating, setGenerating] = useState(false);
+  const [genError, setGenError]     = useState<string | null>(null);
+
+  const handleGenerate = async () => {
+    setGenerating(true);
+    setGenError(null);
+    try {
+      await api.generateBrief(stock.symbol);
+      onBriefGenerated();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to generate brief";
+      // Surface the detail from the API response when available
+      setGenError(msg);
+    } finally {
+      setGenerating(false);
+    }
+  };
+
   if (tab === "trend") {
     return <TrendTemplateCard details={stock.trend_template_details} passes={stock.trend_template_pass} />;
   }
@@ -198,27 +216,62 @@ function TabContent({ tab, stock }: { tab: Tab; stock: StockResult }) {
   }
   if (tab === "fundamentals") {
     return (
-      <div className="bg-slate-900 rounded-xl border border-slate-800 p-6">
-        <h3 className="text-sm font-semibold text-slate-300 mb-2">Fundamentals</h3>
-        <p className={`text-sm font-medium ${stock.fundamental_pass ? "text-green-400" : "text-slate-500"}`}>
-          {stock.fundamental_pass ? "✅ Passes fundamental template" : "❌ Does not pass fundamental template"}
-        </p>
-        {stock.news_score != null && (
-          <p className="text-xs text-slate-500 mt-2">
-            News sentiment score: <span className="text-slate-300">{stock.news_score.toFixed(2)}</span>
-          </p>
-        )}
-      </div>
+      <FundamentalsCard
+        details={stock.fundamental_details ?? null}
+        passes={stock.fundamental_pass}
+        newsScore={stock.news_score}
+      />
     );
   }
   // llm
   return (
-    <div className="bg-slate-900 rounded-xl border border-slate-800 p-6">
-      <h3 className="text-sm font-semibold text-slate-300 mb-3">AI Brief</h3>
+    <div className="bg-slate-900 rounded-xl border border-slate-800 p-6 space-y-4">
+      <h3 className="text-sm font-semibold text-slate-300">AI Brief</h3>
+
       {stock.llm_brief ? (
-        <p className="text-sm text-slate-400 leading-relaxed whitespace-pre-wrap">{stock.llm_brief}</p>
+        <div className="space-y-3">
+          <p className="text-sm text-slate-400 leading-relaxed whitespace-pre-wrap">
+            {stock.llm_brief}
+          </p>
+          <button
+            onClick={handleGenerate}
+            disabled={generating}
+            className="text-xs text-slate-500 hover:text-slate-300 underline underline-offset-2 transition-colors disabled:opacity-40"
+          >
+            {generating ? "Regenerating…" : "Regenerate"}
+          </button>
+        </div>
       ) : (
-        <p className="text-slate-600 text-sm">No AI brief available for this symbol.</p>
+        <div className="space-y-4">
+          <p className="text-sm text-slate-500">
+            No AI brief has been generated for this setup yet.
+          </p>
+          {["A+", "A"].includes(stock.setup_quality) ? (
+            <button
+              onClick={handleGenerate}
+              disabled={generating}
+              className="flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium text-white transition-colors"
+            >
+              {generating ? (
+                <>
+                  <span className="inline-block w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                  Generating…
+                </>
+              ) : (
+                "✦ Generate AI Brief"
+              )}
+            </button>
+          ) : (
+            <p className="text-xs text-slate-600">
+              AI briefs are only produced for A+ and A quality setups.
+              This setup is rated <span className="text-slate-500">{stock.setup_quality}</span>.
+            </p>
+          )}
+        </div>
+      )}
+
+      {genError && (
+        <p className="text-xs text-red-400 mt-2">{genError}</p>
       )}
     </div>
   );
@@ -354,7 +407,7 @@ export default function StockDetailPage({
                 </button>
               ))}
             </div>
-            <TabContent tab={activeTab} stock={stock} />
+            <TabContent tab={activeTab} stock={stock} onBriefGenerated={mutate} />
           </div>
         </div>
 

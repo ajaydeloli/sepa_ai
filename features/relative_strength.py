@@ -1,27 +1,53 @@
 """
 features/relative_strength.py
 ------------------------------
-Minervini RS Rating — measures how much stronger a stock's 63-day return
-is versus the Nifty-500 benchmark, then ranks it as a 0–99 percentile
-score across the entire universe.
+Minervini RS Rating — IBD-style multi-period weighted return, ranked as a
+0–99 percentile score across the full universe.
 
-TWO-STAGE DESIGN
-----------------
+FORMULA (IBD / Minervini)
+-------------------------
 Stage 1  (per-symbol)  : compute_rs_raw()
-    Appends a single ``rs_raw`` column to the symbol DataFrame.
-    rs_raw = symbol_63d_return / benchmark_63d_return
-    where return = (close_today / close_63_days_ago) - 1
+
+    rs_raw = 0.4 * (C / C_63)
+           + 0.2 * (C / C_126)
+           + 0.2 * (C / C_189)
+           + 0.2 * (C / C_252)
+
+    where C = today's close, C_N = close N trading days ago.
+    The most-recent quarter (63 days) is double-weighted (0.4) to emphasise
+    recent momentum.  All four windows together span one full year (252 days).
+
+    Crucially, rs_raw is the stock's own weighted return score — NOT divided
+    by a benchmark.  The benchmark is irrelevant at this stage; the ranking
+    step (Stage 2) is what makes it relative.
 
 Stage 2  (cross-universe) : compute_rs_rating()
-    Called once after rs_raw is collected for ALL symbols.
-    Returns an integer 0–99 percentile rank per symbol.
+    Called ONCE after rs_raw is collected for ALL symbols.
+    Percentile-ranks every symbol's rs_raw against the rest of the universe
+    and returns an integer 0–99 score.  A rating of 88 means the stock
+    outperformed 88 % of the universe.
+
+DATA REQUIREMENT
+----------------
+Full formula requires 254 trading days (~1 year).  For IPOs and recently
+listed stocks, a **degraded formula** is used automatically — weights are
+renormalised to 1.0 using only the quarterly windows that have data:
+
+  ≥ 254 days → Q1+Q2+Q3+Q4  weights 0.40/0.20/0.20/0.20  (full IBD)
+  ≥ 191 days → Q1+Q2+Q3     weights 0.50/0.25/0.25
+  ≥ 128 days → Q1+Q2        weights 0.67/0.33
+  ≥  65 days → Q1 only      weight  1.00
+  <  65 days → rating = 0   (too new for any meaningful RS)
 
 IMPORTANT
 ---------
-* Do NOT merge these stages — compute_rs_raw touches DataFrames,
+* Do NOT merge the two stages — compute_rs_raw touches DataFrames,
   compute_rs_rating never sees a DataFrame; it only works with floats.
-* The benchmark ticker is NEVER hardcoded; it is passed in as a
-  prepared DataFrame by the caller (loaded from config upstream).
+* The benchmark_df parameter is kept in compute_rs_raw's signature for
+  future use (e.g. plotting the RS Line on charts) but is NOT used in the
+  rating calculation.
+* Lookback periods and minimum rows are read from config so they can be
+  changed in settings.yaml without touching this file.
 """
 
 from __future__ import annotations
@@ -35,12 +61,31 @@ from utils.logger import get_logger
 log = get_logger(__name__)
 
 # ---------------------------------------------------------------------------
-# Constants
+# Constants  (used as fallbacks when config keys are absent)
 # ---------------------------------------------------------------------------
 
-_DEFAULT_RS_PERIOD: int = 63
-_REQUIRED_ROWS_BUFFER: int = 2          # extra rows beyond the period
-_MIN_ROWS: int = _DEFAULT_RS_PERIOD + _REQUIRED_ROWS_BUFFER  # 65
+_DEFAULT_Q1: int = 63    # 3-month  — weight 0.4
+_DEFAULT_Q2: int = 126   # 6-month  — weight 0.2
+_DEFAULT_Q3: int = 189   # 9-month  — weight 0.2
+_DEFAULT_Q4: int = 252   # 12-month — weight 0.2
+_DEFAULT_MIN_ROWS: int = 254   # period_q4 + 2 buffer rows
+
+_W1: float = 0.4
+_W2: float = 0.2
+_W3: float = 0.2
+_W4: float = 0.2
+
+
+def _rs_config(config: dict) -> tuple[int, int, int, int, int, int]:
+    """Return (q1, q2, q3, q4, min_rows, min_ipo_rows) from config with safe defaults."""
+    rs = config.get("rs", {})
+    q1 = int(rs.get("period_q1", _DEFAULT_Q1))
+    q2 = int(rs.get("period_q2", _DEFAULT_Q2))
+    q3 = int(rs.get("period_q3", _DEFAULT_Q3))
+    q4 = int(rs.get("period_q4", _DEFAULT_Q4))
+    min_rows = int(rs.get("min_rows", q4 + 2))
+    min_ipo_rows = int(rs.get("min_ipo_rows", q1 + 2))   # floor: one quarter + buffer
+    return q1, q2, q3, q4, min_rows, min_ipo_rows
 
 
 # ---------------------------------------------------------------------------
@@ -50,23 +95,42 @@ _MIN_ROWS: int = _DEFAULT_RS_PERIOD + _REQUIRED_ROWS_BUFFER  # 65
 
 def compute_rs_raw(
     symbol_df: pd.DataFrame,
-    benchmark_df: pd.DataFrame,
+    benchmark_df: pd.DataFrame | None,
     config: dict,
 ) -> pd.DataFrame:
     """Append ``rs_raw`` to *symbol_df* and return it.
+
+    Supports a **degraded formula** for IPOs and recently listed stocks that
+    do not yet have a full year of history.  The weights are renormalised to
+    sum to 1.0 using only the quarterly windows for which data is available:
+
+    +------------------+-------------------+---------------------+
+    | History          | Windows used      | Renormalised weights|
+    +==================+===================+=====================+
+    | ≥ 254 days       | Q1+Q2+Q3+Q4       | 0.40/0.20/0.20/0.20 |
+    | ≥ 191 days       | Q1+Q2+Q3          | 0.50/0.25/0.25      |
+    | ≥ 128 days       | Q1+Q2             | 0.67/0.33           |
+    | ≥ 65 days        | Q1 only           | 1.00                |
+    | < 65 days        | —                 | raises              |
+    +------------------+-------------------+---------------------+
 
     Parameters
     ----------
     symbol_df:
         OHLCV DataFrame with a DatetimeIndex and at least a ``close`` column.
+        Must have at least ``min_ipo_rows`` rows (default 65).
     benchmark_df:
-        Benchmark OHLCV (e.g. Nifty 500 index) with the same DatetimeIndex
-        schema and a ``close`` column.  It is assumed to be aligned to
-        *symbol_df* by the caller (same dates).
+        Accepted for API compatibility / future RS-Line charting.
+        NOT used in the rating calculation.
     config:
-        Screening config dict.  Relevant key::
+        Screening config dict.  Relevant keys::
 
-            config["rs"]["period"]  (default 63)
+            config["rs"]["period_q1"]    (default 63)
+            config["rs"]["period_q2"]    (default 126)
+            config["rs"]["period_q3"]    (default 189)
+            config["rs"]["period_q4"]    (default 252)
+            config["rs"]["min_rows"]     (default 254)
+            config["rs"]["min_ipo_rows"] (default 65)
 
     Returns
     -------
@@ -76,53 +140,69 @@ def compute_rs_raw(
     Raises
     ------
     InsufficientDataError
-        When ``len(symbol_df) < period + 2`` (default: < 65).
-
-    Notes
-    -----
-    rs_raw is computed only for the *last* row (today's screen date) because
-    the screener is a point-in-time daily snapshot.  All other rows receive
-    NaN for rs_raw, consistent with the moving_averages pattern.
+        When ``len(symbol_df) < min_ipo_rows`` (default: < 65).
+        This is the absolute floor — below one full quarter no RS is possible.
     """
-    period: int = config.get("rs", {}).get("period", _DEFAULT_RS_PERIOD)
-    min_rows: int = period + _REQUIRED_ROWS_BUFFER
+    q1, q2, q3, q4, min_rows, min_ipo_rows = _rs_config(config)
 
     n_rows = len(symbol_df)
-    if n_rows < min_rows:
+
+    # Absolute floor — less than one quarter means no meaningful RS at all
+    if n_rows < min_ipo_rows:
         raise InsufficientDataError(
-            "DataFrame too short for RS computation",
-            required=min_rows,
+            f"DataFrame too short for RS computation "
+            f"(need at least {min_ipo_rows} rows for single-quarter formula, got {n_rows})",
+            required=min_ipo_rows,
             available=n_rows,
         )
 
-    log.debug("compute_rs_raw: rows=%d period=%d", n_rows, period)
+    close: pd.Series = symbol_df["close"]
 
-    close_sym: pd.Series = symbol_df["close"]
+    # ── Select the highest-tier formula available for this symbol ──────────
+    # Weights are renormalised so they always sum to 1.0 regardless of tier.
+    # Tier boundaries use a 2-row buffer beyond each period (same as min_rows).
+    if n_rows >= q4 + 2:
+        # Full formula — all four quarters
+        w1, w2, w3, w4 = 0.40, 0.20, 0.20, 0.20
+        rs_raw = (
+            w1 * (close / close.shift(q1))
+            + w2 * (close / close.shift(q2))
+            + w3 * (close / close.shift(q3))
+            + w4 * (close / close.shift(q4))
+        )
+        tier = "full (Q1+Q2+Q3+Q4)"
 
-    # Align benchmark to symbol's DatetimeIndex using forward-fill so that
-    # any trading days present in the symbol but absent from the benchmark
-    # (e.g. today's intraday bar not yet in the index) get the last known value.
-    close_bm: pd.Series = (
-        benchmark_df["close"]
-        .reindex(close_sym.index)
-        .ffill()
+    elif n_rows >= q3 + 2:
+        # Three quarters — renormalise: original weights 0.4/0.2/0.2 → sum 0.8
+        w1, w2, w3 = 0.50, 0.25, 0.25
+        rs_raw = (
+            w1 * (close / close.shift(q1))
+            + w2 * (close / close.shift(q2))
+            + w3 * (close / close.shift(q3))
+        )
+        tier = "degraded (Q1+Q2+Q3)"
+
+    elif n_rows >= q2 + 2:
+        # Two quarters — renormalise: original weights 0.4/0.2 → sum 0.6
+        w1, w2 = round(0.4 / 0.6, 6), round(0.2 / 0.6, 6)
+        rs_raw = (
+            w1 * (close / close.shift(q1))
+            + w2 * (close / close.shift(q2))
+        )
+        tier = "degraded (Q1+Q2)"
+
+    else:
+        # Single quarter only — weight 1.0
+        rs_raw = close / close.shift(q1)
+        tier = "degraded (Q1 only)"
+
+    log.debug(
+        "compute_rs_raw: rows=%d  tier=%s  last_rs_raw=%.4f",
+        n_rows, tier, float(rs_raw.iloc[-1]) if not rs_raw.empty else float("nan"),
     )
-
-    # Compute rolling rs_raw across the whole series so the column is fully
-    # populated (useful for back-testing / feature store).
-    sym_return = close_sym / close_sym.shift(period) - 1.0
-    bm_return = close_bm / close_bm.shift(period) - 1.0
-
-    # Guard against division by zero when benchmark return is exactly 0
-    rs_raw = sym_return / bm_return.replace(0.0, np.nan)
 
     symbol_df = symbol_df.copy()
     symbol_df["rs_raw"] = rs_raw
-
-    log.debug(
-        "compute_rs_raw finished; last rs_raw=%.4f",
-        rs_raw.iloc[-1] if not rs_raw.empty else float("nan"),
-    )
     return symbol_df
 
 
@@ -146,17 +226,16 @@ def compute_rs_rating(
     Returns
     -------
     dict[str, int]
-        Mapping of symbol → integer RS Rating in [0, 99], e.g.::
+        Mapping of symbol → integer RS Rating in [0, 99].
 
-            {"RELIANCE": 88, "TCS": 30, "INFY": 55}
-
-        A rating of 88 means the symbol outperformed 88 % of the universe.
+        A rating of 88 means the symbol's weighted 12-month return
+        outperformed 88 % of the universe.
 
     Notes
     -----
     * NaN / ±Inf values are assigned a rating of 0 rather than causing a crash.
     * When the universe has only one symbol it receives a rating of 99.
-    * The percentile is computed with "weak" ranking: ties get the same score.
+    * The percentile uses "weak" ranking: ties receive the same score.
     """
     if not all_rs_raw:
         return {}
@@ -167,43 +246,28 @@ def compute_rs_rating(
     n = len(symbols)
 
     if n == 1:
-        # Edge case: single symbol gets the maximum score
         return {symbols[0]: 99}
 
-    # Replace NaN / ±Inf with -inf so they rank at the bottom
-    finite_mask = np.isfinite(raw_values)
-    values_clean = np.where(finite_mask, raw_values, -np.inf)
+    # Replace NaN / ±Inf with -inf so they sink to the bottom of the ranking
+    values_clean = np.where(np.isfinite(raw_values), raw_values, -np.inf)
 
-    # Percentile rank: fraction of universe that this symbol beats (strictly).
-    # Equivalent to scipy.stats.percentileofscore(values, v, kind='weak') / 100
-    # but vectorised over all symbols at once.
-    #
-    # For each symbol i: rank_i = number of symbols with value < values[i]
-    # percentile_i = rank_i / (n - 1) scaled to [0, 99] and floored to int.
-    #
-    # Using broadcasting: count how many values each element beats.
+    # Vectorised percentile rank:
+    #   beats[i] = number of symbols whose rs_raw is strictly less than symbol i
+    #   rating[i] = floor(beats[i] / (n-1) * 99)  →  range [0, 99]
     beats = np.sum(values_clean[:, None] > values_clean[None, :], axis=1)
+    ratings_int = np.clip(np.floor(beats / (n - 1) * 99.0).astype(int), 0, 99)
 
-    # Scale to [0, 99]
-    ratings_float = beats / (n - 1) * 99.0
-    ratings_int = np.floor(ratings_float).astype(int)
-
-    # Clamp to [0, 99] as a safety measure
-    ratings_int = np.clip(ratings_int, 0, 99)
-
-    result = {sym: int(rating) for sym, rating in zip(symbols, ratings_int)}
+    result = {sym: int(r) for sym, r in zip(symbols, ratings_int)}
 
     log.debug(
-        "compute_rs_rating: universe_size=%d min=%d max=%d",
-        n,
-        min(result.values()),
-        max(result.values()),
+        "compute_rs_rating: universe=%d  min=%d  max=%d",
+        n, min(result.values()), max(result.values()),
     )
     return result
 
 
 # ---------------------------------------------------------------------------
-# Cross-symbol orchestration helpers  (called from pipeline / screener)
+# Cross-symbol orchestration helpers  (called from screener/pipeline.py)
 # ---------------------------------------------------------------------------
 
 
@@ -213,80 +277,103 @@ def run_rs_rating_pass(
     config: dict,
     benchmark_df: pd.DataFrame,
 ) -> dict[str, int]:
-    """Compute RS ratings for every symbol in *universe* in a single cross-symbol pass.
+    """Compute RS ratings for every symbol in *universe* in a single pass.
 
-    This function performs all I/O and orchestrates the two-stage RS calculation:
-    Stage 1 (per symbol): read processed data → call compute_rs_raw() → extract last rs_raw.
-    Stage 2 (cross universe): call compute_rs_rating() on the collected rs_raw values.
+    Orchestrates the two-stage IBD RS calculation:
+
+    Stage 1 (per symbol):
+        Read processed parquet → call ``compute_rs_raw()`` → extract last
+        ``rs_raw`` value.  Symbols with fewer than ``min_rows`` trading days
+        (default 254 ≈ 1 year) receive ``rs_raw = NaN``.
+
+    Stage 2 (cross-universe):
+        Call ``compute_rs_rating()`` on all valid rs_raw values.
+        Symbols with NaN are excluded from the ranking pool and assigned
+        rating = 0.
 
     Parameters
     ----------
     universe:
-        List of ticker symbols to process (e.g. ``["RELIANCE", "TCS", "INFY"]``).
+        List of ticker symbols to process.
     run_date:
-        The trading date being processed.  Used only for log messages.
+        The trading date being processed.  Used for log messages only.
     config:
         Screening configuration dict.  Relevant keys::
 
-            config["data"]["processed_dir"]  — directory with per-symbol Parquet files
-            config["rs"]["period"]           — lookback period (default 63)
+            config["data"]["processed_dir"]
+            config["rs"]["period_q1..q4"]
+            config["rs"]["min_rows"]
     benchmark_df:
-        Prepared benchmark OHLCV DataFrame (e.g. Nifty 500) aligned to the
-        symbol data.  Same schema as symbol DataFrames — DatetimeIndex + ``close``.
+        Passed through to ``compute_rs_raw`` for API compatibility.
+        Not used in the IBD rating calculation.
 
     Returns
     -------
     dict[str, int]
-        Mapping of ``symbol → rs_rating`` (integer 0–99) for every symbol in
-        *universe*.  Symbols with insufficient data receive a rating of ``0``.
+        ``symbol → rs_rating`` (0–99) for every symbol in *universe*.
+        Symbols with insufficient data receive 0.
     """
     from pathlib import Path
     from storage.parquet_store import read_last_n_rows
 
     processed_dir = Path(config["data"]["processed_dir"])
-    period: int = config.get("rs", {}).get("period", _DEFAULT_RS_PERIOD)
-    rows_needed: int = period + _REQUIRED_ROWS_BUFFER + 5  # 70-row read window
+    _, _, _, q4, min_rows, min_ipo_rows = _rs_config(config)
+
+    # Read enough rows to cover the full formula; compute_rs_raw degrades
+    # automatically when fewer rows are available (IPO / recently listed stocks).
+    rows_needed: int = q4 + 10
 
     all_rs_raw: dict[str, float] = {}
+    n_full = n_degraded = n_zero = 0
 
     for symbol in universe:
         path = processed_dir / f"{symbol}.parquet"
         try:
             symbol_df = read_last_n_rows(path, rows_needed)
-            if len(symbol_df) < _MIN_ROWS:
-                log.warning(
-                    "run_rs_rating_pass %s %s: only %d rows (need %d) — skipped",
-                    symbol, run_date, len(symbol_df), _MIN_ROWS,
-                )
-                all_rs_raw[symbol] = float("nan")
-                continue
+            n_rows = len(symbol_df)
 
+            # compute_rs_raw handles all tiers internally and only raises
+            # InsufficientDataError when rows < min_ipo_rows (< 1 quarter).
             result_df = compute_rs_raw(symbol_df, benchmark_df, config)
             rs_val = float(result_df["rs_raw"].iloc[-1])
             all_rs_raw[symbol] = rs_val
 
-        except InsufficientDataError as exc:
-            log.warning("run_rs_rating_pass %s %s: insufficient data (%s)", symbol, run_date, exc)
-            all_rs_raw[symbol] = float("nan")
-        except Exception as exc:  # noqa: BLE001
-            log.warning("run_rs_rating_pass %s %s: error (%s)", symbol, run_date, exc)
-            all_rs_raw[symbol] = float("nan")
+            if n_rows >= min_rows:
+                n_full += 1
+            else:
+                n_degraded += 1
+                log.info(
+                    "run_rs_rating_pass %s %s: IPO/new listing — %d rows, "
+                    "using degraded formula",
+                    symbol, run_date, n_rows,
+                )
 
-    # Filter out NaN symbols for rating computation but still assign 0 to them
+        except InsufficientDataError:
+            # Below absolute floor (< min_ipo_rows ≈ 65 days) — too new for any RS
+            all_rs_raw[symbol] = float("nan")
+            n_zero += 1
+            log.debug(
+                "run_rs_rating_pass %s %s: < %d rows — rating=0 (too new)",
+                symbol, run_date, min_ipo_rows,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "run_rs_rating_pass %s %s: unexpected error — %s",
+                symbol, run_date, exc,
+            )
+            all_rs_raw[symbol] = float("nan")
+            n_zero += 1
+
+    # Stage 2: rank only valid symbols; zero-rate the rest
     valid_rs = {s: v for s, v in all_rs_raw.items() if np.isfinite(v)}
     ratings = compute_rs_rating(valid_rs) if valid_rs else {}
 
-    # Assign 0 to symbols that had no valid data
-    result: dict[str, int] = {}
-    for symbol in universe:
-        result[symbol] = int(ratings.get(symbol, 0))
+    result: dict[str, int] = {symbol: int(ratings.get(symbol, 0)) for symbol in universe}
 
     log.info(
-        "run_rs_rating_pass %s: processed %d symbols, %d valid, %d zero-rated",
-        run_date,
-        len(universe),
-        len(valid_rs),
-        len(universe) - len(valid_rs),
+        "run_rs_rating_pass %s: %d symbols — %d full, %d degraded (IPO), "
+        "%d zero-rated (too new / error)",
+        run_date, len(universe), n_full, n_degraded, n_zero,
     )
     return result
 
@@ -298,9 +385,8 @@ def write_rs_ratings_to_features(
     """Write RS ratings back into each symbol's feature Parquet file (last row only).
 
     Called ONCE per daily run after :func:`run_rs_rating_pass` has computed
-    ratings for the full universe.  The function reads the existing feature
-    file, sets the last row's ``rs_rating`` column to the integer rating, and
-    writes the file back atomically.
+    ratings for the full universe.  Reads the existing feature file, updates
+    the last row's ``rs_rating`` column, and writes it back atomically.
 
     Parameters
     ----------
@@ -310,16 +396,14 @@ def write_rs_ratings_to_features(
     config:
         Screening configuration dict.  Relevant key::
 
-            config["data"]["features_dir"]  — directory with feature Parquet files
+            config["data"]["features_dir"]
 
     Notes
     -----
     * Only symbols whose feature file already exists are processed.
-    * If a symbol's feature file is missing, a warning is logged and that
-      symbol is skipped — no file is created.
-    * The write is a full-overwrite of the feature file (atomic via
-      :func:`~storage.parquet_store.write_parquet`) so callers should not
-      hold open file handles across this call.
+    * Missing feature files are skipped with a warning (not an error).
+    * The write is a full atomic overwrite via
+      :func:`~storage.parquet_store.write_parquet`.
     """
     from pathlib import Path
     from storage.parquet_store import read_parquet, write_parquet
@@ -345,21 +429,23 @@ def write_rs_ratings_to_features(
                 )
                 continue
 
-            df["rs_rating"] = df.get("rs_rating", np.nan)
+            if "rs_rating" not in df.columns:
+                df["rs_rating"] = np.nan
             df.iloc[-1, df.columns.get_loc("rs_rating")] = int(rating)
 
             write_parquet(path, df)
             log.debug(
-                "write_rs_ratings_to_features %s: set rs_rating=%d on last row",
+                "write_rs_ratings_to_features %s: rs_rating=%d written to last row",
                 symbol, rating,
             )
 
         except Exception as exc:  # noqa: BLE001
             log.warning(
-                "write_rs_ratings_to_features %s: failed to update (%s)", symbol, exc
+                "write_rs_ratings_to_features %s: failed to update — %s",
+                symbol, exc,
             )
 
     log.info(
-        "write_rs_ratings_to_features: updated rs_rating for %d symbols",
+        "write_rs_ratings_to_features: updated %d feature files",
         len(rs_ratings),
     )

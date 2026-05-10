@@ -630,7 +630,7 @@ def run_daily(ctx: RunContext) -> dict:
         llm_briefs: dict[str, str] = {}
         watchlist_summary: str | None = None
         try:
-            if config.get("llm", {}).get("enabled", False):
+            if config.get("llm", {}).get("enabled", True):
                 qualifying = [r for r in results if r.setup_quality in ("A+", "A")]
                 ohlcv_for_llm = {
                     r.symbol: read_last_n_rows(processed_dir / f"{r.symbol}.parquet", 5)
@@ -644,6 +644,19 @@ def run_daily(ctx: RunContext) -> dict:
                 log.debug("Step 10b: llm.enabled=False — skipping briefs")
         except Exception as exc:
             log.error("Step 10b (LLM briefs) failed: %s", exc)
+
+        # Step 10b-persist — upsert llm_brief into SQLite for the symbols that
+        # received a brief.  This runs as a second pass so the API can return
+        # the brief without regenerating it on every request.
+        if llm_briefs and not ctx.dry_run:
+            try:
+                brief_results = [r for r in results if r.symbol in llm_briefs]
+                persist_results(brief_results, db, run_date, llm_briefs=llm_briefs)
+                log.info(
+                    "Step 10b-persist: stored %d LLM briefs to SQLite", len(llm_briefs)
+                )
+            except Exception as exc:
+                log.error("Step 10b-persist (LLM brief upsert) failed: %s", exc)
 
         # Step 10c — HTML report (rendered after LLM briefs so briefs are included)
         try:

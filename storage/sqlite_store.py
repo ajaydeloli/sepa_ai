@@ -67,6 +67,7 @@ CREATE TABLE IF NOT EXISTS screen_results (
     stop_loss           REAL,
     risk_pct            REAL,
     result_json         TEXT,
+    llm_brief           TEXT,
     created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(run_date, symbol)
 );
@@ -118,6 +119,16 @@ class SQLiteStore:
     def _init_schema(self) -> None:
         with self._connect() as conn:
             conn.executescript(_DDL)
+            # Migration: add llm_brief column to existing databases that
+            # were created before this column was introduced.
+            existing = {
+                row[1]
+                for row in conn.execute("PRAGMA table_info(screen_results)").fetchall()
+            }
+            if "llm_brief" not in existing:
+                conn.execute(
+                    "ALTER TABLE screen_results ADD COLUMN llm_brief TEXT"
+                )
 
     @staticmethod
     def _row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
@@ -188,11 +199,13 @@ class SQLiteStore:
             INSERT INTO screen_results (
                 run_date, symbol, stage, score, setup_quality,
                 trend_template_pass, vcp_qualified, breakout_triggered,
-                rs_rating, entry_price, stop_loss, risk_pct, result_json
+                rs_rating, entry_price, stop_loss, risk_pct, result_json,
+                llm_brief
             ) VALUES (
                 :run_date, :symbol, :stage, :score, :setup_quality,
                 :trend_template_pass, :vcp_qualified, :breakout_triggered,
-                :rs_rating, :entry_price, :stop_loss, :risk_pct, :result_json
+                :rs_rating, :entry_price, :stop_loss, :risk_pct, :result_json,
+                :llm_brief
             )
             ON CONFLICT(run_date, symbol) DO UPDATE SET
                 stage               = excluded.stage,
@@ -205,7 +218,8 @@ class SQLiteStore:
                 entry_price         = excluded.entry_price,
                 stop_loss           = excluded.stop_loss,
                 risk_pct            = excluded.risk_pct,
-                result_json         = excluded.result_json
+                result_json         = excluded.result_json,
+                llm_brief           = COALESCE(excluded.llm_brief, screen_results.llm_brief)
         """
         params = {
             "run_date": str(run_date),
@@ -223,6 +237,7 @@ class SQLiteStore:
             # Use the pre-built full-SEPAResult JSON when available (set by
             # persist_results), otherwise fall back to serialising result_dict.
             "result_json": result_dict.get("result_json") or json.dumps(result_dict, default=str),
+            "llm_brief": result_dict.get("llm_brief"),
         }
         with self._connect() as conn:
             conn.execute(sql, params)

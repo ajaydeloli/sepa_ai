@@ -51,6 +51,23 @@ class TrendTemplateSchema(BaseModel):
     condition_8: bool = False   # RS Rating >= threshold
 
 
+class FundamentalDetailsSchema(BaseModel):
+    """Per-condition breakdown from FundamentalResult — mirrors rules/fundamental_template.py."""
+
+    passes: bool = False
+    conditions_met: int = 0
+    f1_eps_positive: bool = False
+    f2_eps_accelerating: bool = False
+    f3_sales_growth: bool = False
+    f4_roe: bool = False
+    f5_de_ratio: bool = False
+    f6_promoter_holding: bool = False
+    f7_profit_growth: bool = False
+    score: int = 0
+    hard_fails: list[str] = []
+    values: dict = {}
+
+
 class VCPSchema(BaseModel):
     """Key VCP metrics surfaced to API consumers."""
 
@@ -94,6 +111,7 @@ class StockResultSchema(BaseModel):
     rs_rating: int
     news_score: float | None = None
     fundamental_pass: bool = False
+    fundamental_details: FundamentalDetailsSchema | None = None
     fundamental_score: int = 50   # 0–100; mirrors FundamentalResult.score;
                                   # defaults to 50 (neutral) matching backend behaviour
                                   # when fundamentals were not evaluated
