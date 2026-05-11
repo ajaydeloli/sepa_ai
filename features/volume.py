@@ -123,5 +123,22 @@ def compute(df: pd.DataFrame, config: dict) -> pd.DataFrame:
     df["down_vol_days"] = down_days
     df["acc_dist_score"] = up_days - down_days
 
+    # ------------------------------------------------------------------
+    # Close Location Value (CLV)
+    #
+    # Measures where the close falls within the day's high-low range.
+    #   0.0 = close at the low  (bearish — selling pressure / distribution)
+    #   0.5 = close at midpoint (neutral)
+    #   1.0 = close at the high (bullish — buying pressure / accumulation)
+    #
+    # Zero-range bars (high == low, e.g. halted stocks, single-tick days)
+    # produce NaN after the division; those are filled to the neutral 0.5
+    # so downstream scoring is not skewed.
+    # ------------------------------------------------------------------
+    hi  = df["high"]
+    lo  = df["low"]
+    rng = (hi - lo).replace(0, float("nan"))
+    df["clv"] = ((close - lo) / rng).fillna(0.5)
+
     log.debug("volume.compute finished; shape=%s", df.shape)
     return df

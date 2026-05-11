@@ -203,7 +203,14 @@ def _compute_volume_score(row: pd.Series, breakout_triggered: bool, config: dict
 
     if breakout_triggered:
         vol_ratio = float(row.get("vol_ratio", 1.0))
-        return min(100.0, vol_ratio / perfect_vol_ratio * 100.0)
+        breakout_raw = min(100.0, vol_ratio / perfect_vol_ratio * 100.0)
+        # CLV modifier: scale the raw score by where the close lands in
+        # the day's range.  A close at the high (CLV=1.0) earns a 1.3×
+        # boost; a close at the low (CLV=0.0) is penalised to 0.7×.
+        # Missing CLV (feature column absent) defaults to 0.5 → 1.0× (neutral).
+        clv = float(row.get("clv", 0.5))
+        clv_modifier = 0.7 + clv * 0.6   # 0.7 at low | 1.0 at mid | 1.3 at high
+        return min(100.0, breakout_raw * clv_modifier)
     else:
         acc_dist = float(row.get("acc_dist_score", 0))
         return min(100.0, max(0.0, (acc_dist + acc_dist_offset) * acc_dist_multiplier))
