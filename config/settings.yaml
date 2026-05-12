@@ -21,7 +21,6 @@ watchlist:
   always_scan: true
   priority_in_reports: true
   always_generate_charts: true
-  min_score_alert: 55
   persist_path: "data/sepa_ai.db"
 
 rs:
@@ -48,7 +47,7 @@ trend_template:
   pct_below_52w_high: 25.0
   min_rs_rating: 70
   ma200_slope_lookback: 20
-  ma50_slope_lookback: 10
+  ma50_slope_lookback: 0
 
 vcp:
   detector: "rule_based"
