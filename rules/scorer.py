@@ -136,7 +136,7 @@ class SEPAResult:
 # Internal component scorers — each returns a float in 0–100.
 # ---------------------------------------------------------------------------
 
-def _compute_vcp_score(vcp_metrics: VCPMetrics, config: dict) -> float:
+def _compute_vcp_score(vcp_metrics: VCPMetrics, config: dict, row: pd.Series | None = None) -> float:
     """Return a 0–100 score reflecting VCP pattern quality.
 
     All numeric thresholds are read from config["scoring"]["vcp_score"] with
@@ -150,9 +150,19 @@ def _compute_vcp_score(vcp_metrics: VCPMetrics, config: dict) -> float:
             + vol_bonus_moderate if vol_contraction_ratio < vol_moderate_threshold
       Bonus is capped at max_bonus.
 
+      When *row* is provided, the base_score is further scaled by a proximity
+      multiplier that reflects how close the current close is to the pivot high:
+        proximity = close / pivot_high
+        >= 0.97          → factor = 1.00
+        0.90–0.97        → linear 0.85–1.00
+        0.80–0.90        → linear 0.70–0.85
+        < 0.80           → factor = 0.60
+      If pivot_high or close is missing / nan the multiplier is skipped.
+
     Unqualified VCP:
       min(partial_cap, max(0, contraction_count × partial_per_contraction))
       Always below valid_base to preserve the valid/invalid score separation.
+      Proximity multiplier is NEVER applied to unqualified VCPs.
     """
     sc = {**_VCP_SCORE_DEFAULTS, **config.get("scoring", {}).get("vcp_score", {})}
 
@@ -172,17 +182,45 @@ def _compute_vcp_score(vcp_metrics: VCPMetrics, config: dict) -> float:
             (ideal_contractions - abs(vcp_metrics.contraction_count - ideal_contractions))
             * contraction_bonus_per_unit
         )
-        vol_ratio = vcp_metrics.vol_contraction_ratio
-        vol_bonus = 0.0
-        if not math.isnan(vol_ratio):
-            if vol_ratio < vol_strong_threshold:
-                vol_bonus = vol_bonus_strong
-            elif vol_ratio < vol_moderate_threshold:
-                vol_bonus = vol_bonus_moderate
-        bonus = min(max_bonus, contraction_bonus + vol_bonus)
-        return valid_base + bonus
+        vol_slope = vcp_metrics.vol_slope
+        if math.isnan(vol_slope):
+            vol_bonus = 0.0
+        else:
+            # slope -0.30 or steeper → +20 pts max; slope 0.0 → 0 pts; positive → penalty up to -10
+            vol_bonus = max(-10.0, min(vol_bonus_strong, vol_slope / -0.30 * vol_bonus_strong))
+        tight = vcp_metrics.tightness_score
+        if not math.isnan(tight) and tight <= 0.75:
+            tightness_bonus = max(0.0, (0.75 - tight) / 0.75 * 15.0)
+        else:
+            tightness_bonus = 0.0
+        bonus = min(max_bonus, contraction_bonus + vol_bonus + tightness_bonus)
+        base_score = valid_base + bonus
+
+        # ------------------------------------------------------------------
+        # Proximity multiplier — only for valid VCPs when row is provided
+        # ------------------------------------------------------------------
+        if row is not None:
+            pivot_high = float(row.get("pivot_high", float("nan")))
+            close      = float(row.get("close",      float("nan")))
+            if not (math.isnan(pivot_high) or math.isnan(close) or pivot_high <= 0):
+                proximity = close / pivot_high
+                if proximity >= 0.97:
+                    proximity_factor = 1.00
+                elif proximity >= 0.90:
+                    # linear: 0.90 → 0.85, 0.97 → 1.00
+                    proximity_factor = 0.85 + (proximity - 0.90) / (0.97 - 0.90) * (1.00 - 0.85)
+                elif proximity >= 0.80:
+                    # linear: 0.80 → 0.70, 0.90 → 0.85
+                    proximity_factor = 0.70 + (proximity - 0.80) / (0.90 - 0.80) * (0.85 - 0.70)
+                else:
+                    proximity_factor = 0.60
+                base_score = base_score * proximity_factor
+
+        return base_score
     else:
-        return min(partial_cap, max(0.0, float(vcp_metrics.contraction_count) * partial_per_contraction))
+        raw = min(partial_cap, max(0.0, float(vcp_metrics.contraction_count) * partial_per_contraction))
+        climax_penalty = min(30.0, vcp_metrics.climax_days_in_base * 10.0)
+        return max(0.0, raw - climax_penalty)
 
 
 def _compute_volume_score(row: pd.Series, breakout_triggered: bool, config: dict) -> float:
@@ -377,7 +415,7 @@ def score_symbol(
     # ------------------------------------------------------------------
     rs_rating_score: float  = float(min(100, max(0, rs_rating)))
     trend_score: float      = tt_result.conditions_met / 8.0 * 100.0
-    vcp_score: float        = _compute_vcp_score(vcp_metrics, config)
+    vcp_score: float        = _compute_vcp_score(vcp_metrics, config, row=row)
     volume_score: float     = _compute_volume_score(row, breakout_triggered, config)
 
     # Phase 5: call check_fundamental_template when fundamentals enabled + provided
@@ -505,6 +543,7 @@ def score_symbol(
         "vol_contraction_ratio": _nan_to_none(vcp_metrics.vol_contraction_ratio),
         "base_length_weeks":     vcp_metrics.base_length_weeks,
         "tightness_score":       _nan_to_none(vcp_metrics.tightness_score),
+        'climax_days_in_base':   vcp_metrics.climax_days_in_base,
     }
 
     return SEPAResult(

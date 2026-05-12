@@ -28,6 +28,8 @@ _NEW_COLS = [
     "ema_21",
     "ma_slope_50",
     "ma_slope_200",
+    "high_52w",
+    "low_52w",
 ]
 
 _ORIG_COLS = ["open", "high", "low", "close", "volume"]
@@ -193,10 +195,10 @@ def test_output_preserves_original_columns_and_adds_exactly_8():
     for col in original_cols:
         assert col in result_cols, f"Original column lost: {col}"
 
-    # Exactly 8 new columns added
+    # Exactly 10 new columns added
     new_cols = [c for c in result_cols if c not in original_cols]
-    assert len(new_cols) == 8, (
-        f"Expected exactly 8 new columns, got {len(new_cols)}: {new_cols}"
+    assert len(new_cols) == 10, (
+        f"Expected exactly 10 new columns, got {len(new_cols)}: {new_cols}"
     )
 
     # No duplicate columns

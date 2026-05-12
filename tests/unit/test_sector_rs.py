@@ -133,9 +133,10 @@ def test_bonus_is_5_for_top_sector_symbol():
         f"Technology should be rank 1, got {sector_ranks}"
     )
 
-    # TCS is in Technology (rank 1) → bonus = 5
+    # TCS is in Technology (rank 1) → get_sector_score_bonus now returns 0
+    # (sector is a weighted component, not a bonus)
     bonus = get_sector_score_bonus("TCS", sector_ranks, symbol_info, top_n=5)
-    assert bonus == 5, f"Expected bonus=5 for top-sector symbol, got {bonus}"
+    assert bonus == 0, f"Expected bonus=0 (sector is now weighted component), got {bonus}"
 
 
 # ---------------------------------------------------------------------------

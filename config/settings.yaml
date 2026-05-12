@@ -62,8 +62,12 @@ vcp:
   require_vol_contraction: true
   min_weeks: 3
   max_weeks: 52
-  tightness_pct: 10.0
+  tightness_pct: 0.75   # ATR10/ATR50 compression ratio threshold (< 0.75 required)
   max_depth_pct: 50.0
+  min_leg_duration_days: 5   # trading days from swing high to swing low
+  min_leg_atr_multiplier: 1.0  # leg high-to-low must be >= 1x ATR at swing high; 0.0 = disabled
+  max_climax_days_in_base: 2       # more than this disqualifies the base
+  climax_vol_threshold: 2.5        # multiplier above 50d avg volume = climax day
 
 fundamentals:
   enabled: true

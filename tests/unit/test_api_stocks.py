@@ -139,10 +139,10 @@ class TestHealthEndpoint:
         resp = client.get("/api/v1/health")
         assert resp.status_code == 200
         body = resp.json()
-        assert body["status"] == "ok"
-        assert body["version"] == "1.0.0"
-        assert "last_run" in body
-        assert "last_run_status" in body
+        assert body["data"]["status"] == "ok"
+        assert body["data"]["version"] == "1.0.0"
+        assert "last_run" in body["data"]
+        assert "last_run_status" in body["data"]
 
     def test_health_no_run_history(self, mock_db, client):
         """When run_history is empty, last_run and last_run_status are None."""
@@ -150,7 +150,7 @@ class TestHealthEndpoint:
         mock_db._connect.return_value.execute.return_value.fetchone.return_value = None
         resp = client.get("/api/v1/health")
         assert resp.status_code == 200
-        assert resp.json()["last_run"] is None
+        assert resp.json()["data"]["last_run"] is None
 
 
 class TestGetTopStocks:

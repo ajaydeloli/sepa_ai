@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import math
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 import pandas as pd
@@ -57,6 +57,10 @@ class VCPMetrics:
     base_low: float                 # lowest low in the entire base (stop-loss floor)
     is_valid_vcp: bool              # True when ALL qualification rules pass
     tightness_score: float          # % range of the last 3 weeks (lower = tighter)
+    monotonic_decline: bool = False # True when each leg depth < previous leg depth
+    leg_depths: list = field(default_factory=list)  # ordered list of all leg depths
+    vol_slope: float = float('nan')  # linear regression slope across all leg avg volumes
+    climax_days_in_base: int = 0    # days inside the base with volume > threshold × 50d avg
 
 
 # ---------------------------------------------------------------------------
@@ -102,20 +106,25 @@ def _apply_vcp_rules(metrics: VCPMetrics, config: dict) -> bool:
     require_vol: bool        = vcp.get("require_vol_contraction", True)
     min_weeks: int           = vcp.get("min_weeks", 3)
     max_weeks: int           = vcp.get("max_weeks", 52)
-    tightness_pct: float     = vcp.get("tightness_pct", 10.0)
+    atr_threshold: float     = vcp.get("tightness_pct", 0.75)
     max_depth_pct: float     = vcp.get("max_depth_pct", 50.0)
 
     if not (min_contractions <= metrics.contraction_count <= max_contractions):
         return False
-    if not (metrics.final_depth_pct < metrics.max_depth_pct):        # each leg shallower
+    if not metrics.monotonic_decline:                                     # each leg shallower
         return False
     if require_vol and metrics.vol_contraction_ratio >= 1.0:          # volume drying up
         return False
     if not (min_weeks <= metrics.base_length_weeks <= max_weeks):
         return False
-    if math.isnan(metrics.tightness_score) or metrics.tightness_score >= tightness_pct:
+    # nan means insufficient data (< 50 bars) — skip the gate rather than failing.
+    # Only reject when we have enough data and compression is not present.
+    if not math.isnan(metrics.tightness_score) and metrics.tightness_score >= atr_threshold:
         return False
     if metrics.max_depth_pct > max_depth_pct:
+        return False
+    max_climax_days: int = vcp.get('max_climax_days_in_base', 2)
+    if metrics.climax_days_in_base > max_climax_days:
         return False
     return True
 
@@ -153,7 +162,20 @@ class RuleBasedVCPDetector(VCPDetector):
 
         swing_highs, swing_lows = find_all_pivots(df, sensitivity=sensitivity)
 
-        legs = self._build_legs(swing_highs, swing_lows)
+        min_atr_multiplier: float = vcp_cfg.get('min_leg_atr_multiplier', 1.0)
+        atr_series = df['atr_14'] if 'atr_14' in df.columns else None
+        legs_raw = self._build_legs(
+            swing_highs,
+            swing_lows,
+            atr_series=atr_series,
+            min_atr_multiplier=min_atr_multiplier,
+        )
+        min_leg_days = vcp_cfg.get('min_leg_duration_days', 5)
+        legs = [leg for leg in legs_raw if leg['duration_days'] >= min_leg_days]
+        log.debug(
+            "RuleBasedVCPDetector: leg filter raw=%d kept=%d min_leg_days=%d",
+            len(legs_raw), len(legs), min_leg_days,
+        )
         contraction_count = len(legs)
 
         log.debug(
@@ -167,11 +189,14 @@ class RuleBasedVCPDetector(VCPDetector):
         depths = [leg["depth"] for leg in legs]
         max_depth_pct   = max(depths)
         final_depth_pct = depths[-1]
+        monotonic_decline = all(depths[i] < depths[i-1] for i in range(1, len(depths)))
 
-        vol_contraction_ratio = self._vol_ratio(df, legs)
+        vol_contraction_ratio, vol_slope = self._vol_stats(df, legs)
         base_length_weeks     = self._base_weeks(df, swing_highs, swing_lows)
         base_low              = self._base_low(df, swing_highs, swing_lows)
         tightness_score       = self._tightness(df)
+        climax_threshold = vcp_cfg.get('climax_vol_threshold', 2.5)
+        climax_days = self._climax_days(df, swing_highs, swing_lows, threshold=climax_threshold)
 
         metrics = VCPMetrics(
             contraction_count     = contraction_count,
@@ -182,6 +207,10 @@ class RuleBasedVCPDetector(VCPDetector):
             base_low              = base_low,
             is_valid_vcp          = False,   # filled below
             tightness_score       = tightness_score,
+            monotonic_decline     = monotonic_decline,
+            leg_depths            = depths,
+            vol_slope             = vol_slope,
+            climax_days_in_base   = climax_days,
         )
         metrics.is_valid_vcp = _apply_vcp_rules(metrics, config)
         return metrics
@@ -195,42 +224,73 @@ class RuleBasedVCPDetector(VCPDetector):
     def _build_legs(
         swing_highs: list[tuple[int, float]],
         swing_lows:  list[tuple[int, float]],
+        atr_series: pd.Series | None = None,
+        min_atr_multiplier: float = 0.0,
     ) -> list[dict]:
         """Pair each swing high with the next swing low to form contraction legs.
 
         A leg captures: start index, end index, high price, low price,
-        and the depth percentage correction.
+        depth percentage correction, and duration_days (sl_idx - sh_idx).
+
+        When *atr_series* is provided and *min_atr_multiplier* > 0.0, legs
+        whose price displacement (sh_price - sl_price) is smaller than
+        ``min_atr_multiplier × ATR_at_swing_high`` are discarded.  This
+        removes noise legs that span enough calendar days but barely move
+        in price.  The defaults keep the filter off — fully backward-compatible.
         """
         legs: list[dict] = []
         for sh_idx, sh_price in swing_highs:
             # First swing low whose row index is strictly after this swing high
             for sl_idx, sl_price in swing_lows:
                 if sl_idx > sh_idx:
+                    # ATR displacement guard — only when both parameters are active
+                    if atr_series is not None and min_atr_multiplier > 0.0:
+                        displacement = sh_price - sl_price
+                        atr_at_high = float(atr_series.iloc[sh_idx])
+                        if (
+                            not math.isnan(atr_at_high)
+                            and atr_at_high > 0
+                            and displacement < min_atr_multiplier * atr_at_high
+                        ):
+                            break  # discard — same as no matching low for this high
                     depth = (sh_price - sl_price) / sh_price * 100.0
                     legs.append(
                         dict(
-                            start_idx  = sh_idx,
-                            end_idx    = sl_idx,
-                            high_price = sh_price,
-                            low_price  = sl_price,
-                            depth      = depth,
+                            start_idx     = sh_idx,
+                            end_idx       = sl_idx,
+                            high_price    = sh_price,
+                            low_price     = sl_price,
+                            depth         = depth,
+                            duration_days = sl_idx - sh_idx,
                         )
                     )
                     break
         return legs
 
     @staticmethod
-    def _vol_ratio(df: pd.DataFrame, legs: list[dict]) -> float:
-        """Compute last-leg average volume / first-leg average volume."""
-        volume = df["volume"].to_numpy(dtype=float)
-        first, last = legs[0], legs[-1]
-
-        first_avg = float(volume[first["start_idx"]: first["end_idx"] + 1].mean())
-        last_avg  = float(volume[last["start_idx"]:  last["end_idx"]  + 1].mean())
-
-        if first_avg <= 0.0 or math.isnan(first_avg):
-            return float("nan")
-        return last_avg / first_avg
+    def _vol_stats(df: pd.DataFrame, legs: list[dict]) -> tuple[float, float]:
+        """Returns (vol_contraction_ratio, vol_slope).
+        ratio: last_avg / first_avg (kept for backward compat, no longer scored).
+        slope: linear regression coefficient of leg_index vs normalised avg volume.
+               Negative = progressive dry-up. Normalised by first-leg avg.
+        """
+        import numpy as np
+        volume = df['volume'].to_numpy(dtype=float)
+        leg_avgs = []
+        for leg in legs:
+            seg = volume[leg['start_idx']: leg['end_idx'] + 1]
+            leg_avgs.append(float(seg.mean()) if len(seg) > 0 else float('nan'))
+        valid = [(i, v) for i, v in enumerate(leg_avgs) if not math.isnan(v)]
+        if len(valid) < 2:
+            ratio = leg_avgs[-1] / leg_avgs[0] if (len(leg_avgs) >= 2 and leg_avgs[0] > 0) else float('nan')
+            return ratio, float('nan')
+        xs = np.array([i for i, _ in valid], dtype=float)
+        ys = np.array([v for _, v in valid], dtype=float)
+        baseline = ys[0] if ys[0] > 0 else 1.0
+        ys_norm = ys / baseline
+        slope = float(np.polyfit(xs, ys_norm, 1)[0])
+        ratio = leg_avgs[-1] / leg_avgs[0] if leg_avgs[0] > 0 else float('nan')
+        return ratio, slope
 
     @staticmethod
     def _all_pivot_indices(
@@ -240,6 +300,35 @@ class RuleBasedVCPDetector(VCPDetector):
         """Return (first_pivot_row_idx, last_pivot_row_idx)."""
         all_idx = [i for i, _ in swing_highs] + [i for i, _ in swing_lows]
         return min(all_idx), max(all_idx)
+
+    @staticmethod
+    def _climax_days(
+        df: pd.DataFrame,
+        swing_highs: list[tuple[int, float]],
+        swing_lows: list[tuple[int, float]],
+        threshold: float = 2.5,
+    ) -> int:
+        """Count days inside the base where volume > threshold × 50d average.
+
+        Returns 0 when insufficient data. Uses _all_pivot_indices() for the base range.
+        """
+        first_idx, last_idx = RuleBasedVCPDetector._all_pivot_indices(swing_highs, swing_lows)
+        base_df = df.iloc[first_idx: last_idx + 1]
+        if len(base_df) < 10:
+            return 0
+        volume = base_df['volume']
+        # Compute 50d rolling average from the full df (not just base_df)
+        full_vol_50 = df['volume'].rolling(50, min_periods=20).mean()
+        # Use the value at first_idx as baseline if base is too short for its own rolling
+        baseline_series = full_vol_50.iloc[first_idx: last_idx + 1]
+        if baseline_series.isna().all():
+            scalar_baseline = float(full_vol_50.iloc[first_idx])
+            if math.isnan(scalar_baseline) or scalar_baseline <= 0:
+                return 0
+            climax_mask = volume > (threshold * scalar_baseline)
+        else:
+            climax_mask = volume > (threshold * baseline_series)
+        return int(climax_mask.sum())
 
     @staticmethod
     def _base_weeks(
@@ -263,19 +352,22 @@ class RuleBasedVCPDetector(VCPDetector):
 
     @staticmethod
     def _tightness(df: pd.DataFrame) -> float:
-        """% range of the last 3 calendar weeks of data."""
-        if df.empty:
-            return float("nan")
-        last_date = df.index[-1]
-        cutoff    = last_date - pd.Timedelta(days=21)
-        sub       = df.loc[df.index >= cutoff]
-        if sub.empty:
-            return float("nan")
-        hi  = float(sub["high"].max())
-        lo  = float(sub["low"].min())
-        if lo <= 0.0:
-            return float("nan")
-        return (hi - lo) / lo * 100.0
+        """ATR compression ratio: ATR_10 / ATR_50.
+        < 0.5 = strong compression. < 0.75 = acceptable. >= 1.0 = no compression.
+        Returns float('nan') if insufficient data (< 50 bars).
+        """
+        if len(df) < 50:
+            return float('nan')
+        tr = pd.concat([
+            df['high'] - df['low'],
+            (df['high'] - df['close'].shift(1)).abs(),
+            (df['low']  - df['close'].shift(1)).abs(),
+        ], axis=1).max(axis=1)
+        atr_10 = float(tr.iloc[-10:].mean())
+        atr_50 = float(tr.iloc[-50:].mean())
+        if atr_50 <= 0.0 or math.isnan(atr_50):
+            return float('nan')
+        return atr_10 / atr_50
 
     @staticmethod
     def _empty_metrics(df: pd.DataFrame) -> VCPMetrics:
@@ -289,6 +381,10 @@ class RuleBasedVCPDetector(VCPDetector):
             base_low              = float(df["low"].min()) if not df.empty else float("nan"),
             is_valid_vcp          = False,
             tightness_score       = float("nan"),
+            monotonic_decline     = False,
+            leg_depths            = [],
+            vol_slope             = float("nan"),
+            climax_days_in_base   = 0,
         )
 
 

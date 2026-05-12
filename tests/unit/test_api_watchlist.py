@@ -58,6 +58,12 @@ def mock_db():
     """MagicMock that stands in for SQLiteStore."""
     db = MagicMock()
     db.get_watchlist.return_value = []
+    # Configure _connect to return a connection mock that returns data for SQL queries
+    conn = MagicMock()
+    conn.__enter__ = lambda s: s
+    conn.__exit__ = MagicMock(return_value=False)
+    conn.execute.return_value.fetchall.return_value = []
+    db._connect.return_value = conn
     return db
 
 
@@ -252,11 +258,19 @@ class TestClearWatchlist:
 class TestGetWatchlist:
     def test_get_returns_list(self, client, mock_db):
         """GET /watchlist → 200 with list of watchlist rows."""
-        mock_db.get_watchlist.return_value = [
+        rows = [
             _make_wl_row("RELIANCE", last_score=85),
             _make_wl_row("TCS", last_score=92),
             _make_wl_row("INFY", last_score=70),
         ]
+        mock_db.get_watchlist.return_value = rows
+        # Configure the SQL query result as well (used by _get_enriched_watchlist)
+        conn = MagicMock()
+        conn.__enter__ = lambda s: s
+        conn.__exit__ = MagicMock(return_value=False)
+        # Return rows as fetchall result
+        conn.execute.return_value.fetchall.return_value = rows
+        mock_db._connect.return_value = conn
         resp = client.get("/api/v1/watchlist")
         assert resp.status_code == 200
         body = resp.json()
@@ -267,11 +281,17 @@ class TestGetWatchlist:
 
     def test_get_sorted_by_score_descending(self, client, mock_db):
         """Default sort=score → highest last_score first."""
-        mock_db.get_watchlist.return_value = [
+        rows = [
             _make_wl_row("LOW", last_score=40),
             _make_wl_row("HIGH", last_score=95),
             _make_wl_row("MID", last_score=70),
         ]
+        mock_db.get_watchlist.return_value = rows
+        conn = MagicMock()
+        conn.__enter__ = lambda s: s
+        conn.__exit__ = MagicMock(return_value=False)
+        conn.execute.return_value.fetchall.return_value = rows
+        mock_db._connect.return_value = conn
         resp = client.get("/api/v1/watchlist?sort=score")
         assert resp.status_code == 200
         symbols = [r["symbol"] for r in resp.json()["data"]]
@@ -279,18 +299,30 @@ class TestGetWatchlist:
 
     def test_get_limit_applied(self, client, mock_db):
         """limit=2 returns at most 2 symbols."""
-        mock_db.get_watchlist.return_value = [
+        rows = [
             _make_wl_row("A", last_score=90),
             _make_wl_row("B", last_score=80),
             _make_wl_row("C", last_score=70),
         ]
+        mock_db.get_watchlist.return_value = rows
+        conn = MagicMock()
+        conn.__enter__ = lambda s: s
+        conn.__exit__ = MagicMock(return_value=False)
+        conn.execute.return_value.fetchall.return_value = rows
+        mock_db._connect.return_value = conn
         resp = client.get("/api/v1/watchlist?limit=2")
         assert resp.status_code == 200
         assert len(resp.json()["data"]) == 2
 
     def test_get_meta_contains_count(self, client, mock_db):
         """Response meta includes count matching returned list length."""
-        mock_db.get_watchlist.return_value = [_make_wl_row("RELIANCE")]
+        rows = [_make_wl_row("RELIANCE")]
+        mock_db.get_watchlist.return_value = rows
+        conn = MagicMock()
+        conn.__enter__ = lambda s: s
+        conn.__exit__ = MagicMock(return_value=False)
+        conn.execute.return_value.fetchall.return_value = rows
+        mock_db._connect.return_value = conn
         resp = client.get("/api/v1/watchlist")
         body = resp.json()
         assert body["meta"]["count"] == len(body["data"])

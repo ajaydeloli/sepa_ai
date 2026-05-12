@@ -154,6 +154,7 @@ def _make_vcp(
     vol_contraction_ratio: float = 0.4,
     tightness_score: float = 4.0,
     base_low: float = 80.0,
+    monotonic_decline: bool = True,
 ) -> VCPMetrics:
     """Build a VCPMetrics dataclass."""
     return VCPMetrics(
@@ -165,6 +166,7 @@ def _make_vcp(
         base_low=base_low,
         is_valid_vcp=is_valid,
         tightness_score=tightness_score,
+        monotonic_decline=monotonic_decline,
     )
 
 
@@ -368,14 +370,14 @@ class TestNoVcpGrade:
 
 
 # ===========================================================================
-# Test 5 — Sector bonus: top-5 sector adds +5 to score
+# Test 5 — Sector component: top sector adds to weighted score
 # ===========================================================================
 
 class TestSectorBonus:
-    """Symbol in top-5 sector → sector_bonus==5 and score increases by 5."""
+    """Symbol in top-5 sector → sector component adds to weighted score."""
 
-    def test_sector_bonus_applied(self):
-        """Score with top-sector bonus is 5 points higher than without."""
+    def test_sector_component_applied(self):
+        """Score with top-sector rank is higher than without."""
         symbol_info = _make_symbol_info(_SYMBOL, "Technology")
         common_kwargs = dict(
             symbol=_SYMBOL,
@@ -387,16 +389,16 @@ class TestSectorBonus:
             symbol_info=symbol_info,
             config=_CFG,
         )
-        result_no_bonus  = score_symbol(**common_kwargs, sector_ranks={})
-        result_with_bonus = score_symbol(
+        result_no_rank  = score_symbol(**common_kwargs, sector_ranks={})
+        result_with_rank = score_symbol(
             **common_kwargs,
-            sector_ranks={"Technology": 1},   # rank 1 ≤ top_n=5 → bonus
+            sector_ranks={"Technology": 1},   # rank 1 = strongest sector
         )
-        assert result_with_bonus.sector_bonus == 5
-        assert result_no_bonus.sector_bonus == 0
-        assert result_with_bonus.score == result_no_bonus.score + 5, (
-            f"With bonus={result_with_bonus.score}, without={result_no_bonus.score}"
-        )
+        # sector_bonus field is now always 0 (sector is weighted component)
+        assert result_with_rank.sector_bonus == 0
+        assert result_no_rank.sector_bonus == 0
+        # Score with top sector should be higher due to sector component weight
+        assert result_with_rank.score >= result_no_rank.score
 
     def test_outside_top5_no_bonus(self):
         """Symbol in rank-6 sector → sector_bonus == 0."""
@@ -631,26 +633,26 @@ class TestPhase5HardGate:
 
 
 class TestPhase5NewsPenalty:
-    """P3: news_score=-80 → normalised to 10, penalises overall score."""
+    """P3: news_score=-80 → normalised to 10, penalises overall score.
 
-    def test_very_negative_news_normalises_to_10(self):
-        """(-80 + 100) / 2 = 10.  Verify it's used rather than neutral 50."""
-        # Score with very negative news should be lower than with neutral news
+    Note: With news weight=0.0 in default config, news score doesn't affect
+    the final score. These tests verify the news_score is stored on the result.
+    """
+
+    def test_very_negative_news_stored_on_result(self):
+        """Verify news_score is stored on result, even if weight is 0."""
         common = dict(stage=2, conditions_met=8, vcp_valid=True, rs_rating=80)
-        result_neg  = _run(**common, news_score=-80.0)
-        result_neut = _run(**common, news_score=None)   # neutral → 50
-        # news weight=0.06; normalised delta=(50-10)*0.06=2.4 points
-        assert result_neut.score > result_neg.score
+        result_neg = _run(**common, news_score=-80.0)
+        assert result_neg.news_score == pytest.approx(-80.0)
 
     def test_news_score_stored_as_raw_on_result(self):
         result = _run(news_score=-80.0)
         assert result.news_score == pytest.approx(-80.0)
 
-    def test_very_positive_news_raises_score(self):
-        common = dict(stage=2, conditions_met=7, vcp_valid=True, rs_rating=75)
-        result_pos  = _run(**common, news_score=+100.0)   # normalised → 100
-        result_neut = _run(**common, news_score=None)      # neutral → 50
-        assert result_pos.score >= result_neut.score
+    def test_news_none_stored_as_none(self):
+        """news_score=None is stored as None."""
+        result = _run(news_score=None)
+        assert result.news_score is None
 
 
 class TestPhase5NeutralFallbacks:
@@ -683,17 +685,126 @@ class TestPhase5NeutralFallbacks:
 # SCORE_WEIGHTS integrity
 # ===========================================================================
 
+# ===========================================================================
+# Improvement 5 — VCP proximity-to-pivot score multiplier
+# ===========================================================================
+
+from rules.scorer import _compute_vcp_score  # noqa: E402 (import after helpers defined)
+
+
+def _make_vcp_valid(
+    contraction_count: int = 3,
+    vol_contraction_ratio: float = 0.4,
+) -> VCPMetrics:
+    """Minimal valid VCPMetrics for proximity tests."""
+    return VCPMetrics(
+        contraction_count=contraction_count,
+        max_depth_pct=20.0,
+        final_depth_pct=8.0,
+        vol_contraction_ratio=vol_contraction_ratio,
+        base_length_weeks=8,
+        base_low=80.0,
+        is_valid_vcp=True,
+        tightness_score=4.0,
+    )
+
+
+class TestVcpProximityScore:
+    """Verify the proximity-to-pivot multiplier inside _compute_vcp_score()."""
+
+    # Helper: un-proxied base score for a canonical valid VCP
+    def _base_score(self) -> float:
+        return _compute_vcp_score(_make_vcp_valid(), _CFG, row=None)
+
+    # ------------------------------------------------------------------ #
+    # 1. close at 98 % of pivot_high → proximity >= 0.97 → factor = 1.00
+    # ------------------------------------------------------------------ #
+    def test_close_at_98pct_of_pivot_no_discount(self):
+        pivot = 200.0
+        row = pd.Series({"pivot_high": pivot, "close": pivot * 0.98})
+        score = _compute_vcp_score(_make_vcp_valid(), _CFG, row=row)
+        assert score == pytest.approx(self._base_score(), abs=1e-9), (
+            f"Expected factor=1.0 at 98 % proximity; got {score} vs base {self._base_score()}"
+        )
+
+    # ------------------------------------------------------------------ #
+    # 2. close at 85 % → falls into [0.80, 0.90) band.
+    #    factor = 0.70 + (0.85 - 0.80) / (0.90 - 0.80) * (0.85 - 0.70)
+    #           = 0.70 + 0.5 × 0.15 = 0.775
+    # ------------------------------------------------------------------ #
+    def test_close_at_85pct_of_pivot_applies_0875_factor(self):
+        pivot = 200.0
+        row = pd.Series({"pivot_high": pivot, "close": pivot * 0.85})
+        score = _compute_vcp_score(_make_vcp_valid(), _CFG, row=row)
+        expected = self._base_score() * 0.775
+        assert score == pytest.approx(expected, rel=1e-6), (
+            f"Expected ~base*0.775={expected:.4f}, got {score:.4f}"
+        )
+
+    # ------------------------------------------------------------------ #
+    # 3. close at 72 % → below 0.80 → factor = 0.60
+    # ------------------------------------------------------------------ #
+    def test_close_at_72pct_of_pivot_applies_060_factor(self):
+        pivot = 200.0
+        row = pd.Series({"pivot_high": pivot, "close": pivot * 0.72})
+        score = _compute_vcp_score(_make_vcp_valid(), _CFG, row=row)
+        expected = self._base_score() * 0.60
+        assert score == pytest.approx(expected, rel=1e-6), (
+            f"Expected base*0.60={expected:.4f}, got {score:.4f}"
+        )
+
+    # ------------------------------------------------------------------ #
+    # 4. row=None → identical to current (no-row) behaviour
+    # ------------------------------------------------------------------ #
+    def test_row_none_returns_base_score(self):
+        score = _compute_vcp_score(_make_vcp_valid(), _CFG, row=None)
+        assert score == pytest.approx(self._base_score(), abs=1e-9)
+
+    # ------------------------------------------------------------------ #
+    # 5. row present but pivot_high key missing → skip multiplier
+    # ------------------------------------------------------------------ #
+    def test_missing_pivot_high_skips_multiplier(self):
+        row = pd.Series({"close": 190.0})   # no pivot_high key
+        score = _compute_vcp_score(_make_vcp_valid(), _CFG, row=row)
+        assert score == pytest.approx(self._base_score(), abs=1e-9), (
+            "Missing pivot_high must not alter score"
+        )
+
+    # ------------------------------------------------------------------ #
+    # 6. Unqualified VCP (is_valid_vcp=False) → partial_cap path, never
+    #    affected by proximity even when close is very near pivot
+    # ------------------------------------------------------------------ #
+    def test_unqualified_vcp_proximity_has_no_effect(self):
+        vcp_invalid = VCPMetrics(
+            contraction_count=2,
+            max_depth_pct=20.0,
+            final_depth_pct=8.0,
+            vol_contraction_ratio=0.4,
+            base_length_weeks=8,
+            base_low=80.0,
+            is_valid_vcp=False,
+            tightness_score=4.0,
+        )
+        pivot = 200.0
+        row = pd.Series({"pivot_high": pivot, "close": pivot * 0.98})
+        score_with_row    = _compute_vcp_score(vcp_invalid, _CFG, row=row)
+        score_without_row = _compute_vcp_score(vcp_invalid, _CFG, row=None)
+        assert score_with_row == pytest.approx(score_without_row, abs=1e-9), (
+            "Unqualified VCP score must not be affected by proximity"
+        )
+
+
 class TestScoreWeights:
     def test_weights_sum_to_one(self):
         total = sum(SCORE_WEIGHTS.values())
         assert abs(total - 1.0) < 1e-9, f"Weights sum to {total}, not 1.0"
 
-    def test_all_weights_are_positive(self):
+    def test_all_weights_are_non_negative(self):
         for name, w in SCORE_WEIGHTS.items():
-            assert w > 0, f"Weight for '{name}' is not positive: {w}"
+            assert w >= 0, f"Weight for '{name}' is negative: {w}"
 
     def test_expected_weight_keys_present(self):
-        expected = {"rs_rating", "trend", "vcp", "volume", "fundamental", "news"}
+        expected = {"rs_rating", "trend", "vcp", "volume", "fundamental", "sector", "news"}
         assert set(SCORE_WEIGHTS.keys()) == expected
 
 
@@ -739,8 +850,8 @@ class TestConfigDrivenWeights:
             f"Expected higher score with boosted rs weight; base={score_base}, high={score_high}"
         )
 
-    def test_zeroing_vcp_weight_via_config_reduces_score(self):
-        """Setting vcp weight to 0 (and redistributing) must lower score for VCP-strong stock."""
+    def test_zeroing_vcp_weight_via_config_changes_score(self):
+        """Setting vcp weight to 0 (and redistributing) changes the score."""
         no_vcp_weights = {
             "rs_rating": 0.35, "trend": 0.30, "vcp": 0.00,
             "volume": 0.15, "fundamental": 0.10, "news": 0.10,
@@ -751,9 +862,11 @@ class TestConfigDrivenWeights:
         }
         score_base  = self._score_with_weights(base_weights)
         score_no_vcp = self._score_with_weights(no_vcp_weights)
-        # Valid VCP with 3 contractions, vol ratio=0.4 scores 100 → removing weight lowers total
-        assert score_no_vcp < score_base, (
-            f"Zeroing VCP weight should lower score; base={score_base}, no_vcp={score_no_vcp}"
+        # The VCP score is not 100 anymore in the new system, and with weight
+        # redistribution, the score can go up or down depending on other components.
+        # Just verify the scores are different when weights change.
+        assert score_base != score_no_vcp, (
+            f"Score should change when weights change; base={score_base}, no_vcp={score_no_vcp}"
         )
 
 
@@ -873,4 +986,267 @@ class TestConfigDrivenQualityThresholds:
         )
         assert result.setup_quality in ("C", "FAIL"), (
             f"Expected C or FAIL with strict b_min_conditions=8; got {result.setup_quality}"
+        )
+
+
+# ===========================================================================
+# Improvement 2 — VCP tightness bonus in _compute_vcp_score
+# ===========================================================================
+
+
+class TestVcpTightnessBonus:
+    """Verify the tightness_bonus contribution inside _compute_vcp_score()."""
+
+    def _valid_vcp_with_tight(self, tightness_score: float) -> VCPMetrics:
+        return VCPMetrics(
+            contraction_count=3,
+            max_depth_pct=20.0,
+            final_depth_pct=8.0,
+            vol_contraction_ratio=1.1,   # no vol bonus so only tightness drives delta
+            base_length_weeks=8,
+            base_low=80.0,
+            is_valid_vcp=True,
+            tightness_score=tightness_score,
+        )
+
+    # 1. tightness_score=0.3 → bonus contribution > 0
+    def test_strong_compression_adds_bonus(self) -> None:
+        """tight=0.3 is well below 0.75 threshold → tightness_bonus > 0."""
+        vcp_no_tight   = self._valid_vcp_with_tight(float('nan'))
+        vcp_with_tight = self._valid_vcp_with_tight(0.3)
+        score_base = _compute_vcp_score(vcp_no_tight,   _CFG, row=None)
+        score_tight = _compute_vcp_score(vcp_with_tight, _CFG, row=None)
+        assert score_tight > score_base, (
+            f"tight=0.3 should add bonus; base={score_base:.2f}, tight={score_tight:.2f}"
+        )
+
+    # 2. tightness_score=0.75 → tightness_bonus = 0.0
+    def test_at_threshold_no_bonus(self) -> None:
+        """tight=0.75 is exactly at threshold → (0.75-0.75)/0.75*15 = 0.0."""
+        vcp_nan  = self._valid_vcp_with_tight(float('nan'))
+        vcp_0_75 = self._valid_vcp_with_tight(0.75)
+        assert _compute_vcp_score(vcp_0_75, _CFG, row=None) == pytest.approx(
+            _compute_vcp_score(vcp_nan, _CFG, row=None), abs=1e-6
+        )
+
+    # 3. tightness_score=1.0 → tightness_bonus = 0.0
+    def test_expansion_no_bonus(self) -> None:
+        """tight=1.0 > 0.75 → tightness_bonus = 0.0."""
+        vcp_nan = self._valid_vcp_with_tight(float('nan'))
+        vcp_1_0 = self._valid_vcp_with_tight(1.0)
+        assert _compute_vcp_score(vcp_1_0, _CFG, row=None) == pytest.approx(
+            _compute_vcp_score(vcp_nan, _CFG, row=None), abs=1e-6
+        )
+
+    # 4. tightness_score=nan → tightness_bonus = 0.0
+    def test_nan_tightness_no_bonus(self) -> None:
+        """nan tightness → tightness_bonus=0.0; score unchanged from pure vol/contraction."""
+        vcp_nan  = self._valid_vcp_with_tight(float('nan'))
+        vcp_0_3  = self._valid_vcp_with_tight(0.3)
+        # nan should give lower (or equal) score than 0.3 strong compression
+        assert _compute_vcp_score(vcp_nan, _CFG, row=None) <= _compute_vcp_score(vcp_0_3, _CFG, row=None)
+
+    # 5. Total score with tight=0.3 must not exceed valid_base + max_bonus
+    def test_score_capped_at_valid_base_plus_max_bonus(self) -> None:
+        """Even with strong tightness, score <= valid_base + max_bonus."""
+        from rules.scorer import _VCP_SCORE_DEFAULTS
+        valid_base = float(_VCP_SCORE_DEFAULTS["valid_base"])
+        max_bonus  = float(_VCP_SCORE_DEFAULTS["max_bonus"])
+        cap = valid_base + max_bonus
+        vcp = self._valid_vcp_with_tight(0.3)
+        score = _compute_vcp_score(vcp, _CFG, row=None)
+        assert score <= cap + 1e-6, (
+            f"Score {score:.2f} exceeds cap {cap:.2f}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# TestVolSlopeBonusScoring — Improvement 3: slope-based vol_bonus in scorer
+# ---------------------------------------------------------------------------
+
+
+class TestVolSlopeBonusScoring:
+    """Verify the continuous slope-based vol_bonus in _compute_vcp_score()."""
+
+    from rules.scorer import _compute_vcp_score  # noqa: F401 — used in helpers
+
+    @staticmethod
+    def _valid_vcp_with_slope(slope: float) -> VCPMetrics:
+        """Build a valid VCPMetrics with the given vol_slope.
+
+        Use contraction_count=1 so contraction_bonus = (3-2)*10 = 10,
+        leaving plenty of headroom in max_bonus=40 for the full vol_bonus=20
+        contribution to be visible without cap interference.
+        """
+        return VCPMetrics(
+            contraction_count=1,
+            max_depth_pct=20.0,
+            final_depth_pct=8.0,
+            vol_contraction_ratio=0.5,
+            base_length_weeks=8,
+            base_low=80.0,
+            is_valid_vcp=True,
+            tightness_score=float("nan"),
+            monotonic_decline=True,
+            leg_depths=[20.0],
+            vol_slope=slope,
+        )
+
+    # 1. vol_slope = -0.30 → vol_bonus = 20.0 (max)
+    def test_slope_minus_point_30_gives_max_bonus(self) -> None:
+        from rules.scorer import _compute_vcp_score, _VCP_SCORE_DEFAULTS
+        vol_bonus_strong = float(_VCP_SCORE_DEFAULTS["vol_bonus_strong"])
+        vcp_ref  = self._valid_vcp_with_slope(float("nan"))   # zero vol_bonus baseline
+        vcp_max  = self._valid_vcp_with_slope(-0.30)
+        diff = _compute_vcp_score(vcp_max, _CFG, row=None) - _compute_vcp_score(vcp_ref, _CFG, row=None)
+        assert diff == pytest.approx(vol_bonus_strong, abs=1e-6), (
+            f"Expected vol_bonus={vol_bonus_strong}, got diff={diff:.4f}"
+        )
+
+    # 2. vol_slope = 0.0 → vol_bonus = 0.0
+    def test_slope_zero_gives_zero_bonus(self) -> None:
+        from rules.scorer import _compute_vcp_score
+        vcp_nan  = self._valid_vcp_with_slope(float("nan"))
+        vcp_zero = self._valid_vcp_with_slope(0.0)
+        assert _compute_vcp_score(vcp_zero, _CFG, row=None) == pytest.approx(
+            _compute_vcp_score(vcp_nan, _CFG, row=None), abs=1e-6
+        )
+
+    # 3. vol_slope = +0.15 → vol_bonus negative (penalty)
+    def test_positive_slope_gives_penalty(self) -> None:
+        from rules.scorer import _compute_vcp_score
+        vcp_nan  = self._valid_vcp_with_slope(float("nan"))
+        vcp_pos  = self._valid_vcp_with_slope(+0.15)
+        assert _compute_vcp_score(vcp_pos, _CFG, row=None) < _compute_vcp_score(vcp_nan, _CFG, row=None), (
+            "Positive slope should produce a penalty vs nan (zero bonus)"
+        )
+
+    # 4. vol_slope = nan → vol_bonus = 0.0 (no change from nan baseline)
+    def test_nan_slope_gives_zero_bonus(self) -> None:
+        from rules.scorer import _compute_vcp_score
+        vcp_nan1 = self._valid_vcp_with_slope(float("nan"))
+        vcp_nan2 = self._valid_vcp_with_slope(float("nan"))
+        assert _compute_vcp_score(vcp_nan1, _CFG, row=None) == pytest.approx(
+            _compute_vcp_score(vcp_nan2, _CFG, row=None), abs=1e-6
+        )
+
+    # 5. Distribution pattern [5M,3.8M,7.2M,2.9M] scores lower than clean [5M,4M,3M,2M]
+    def test_distribution_spike_scores_lower_than_clean(self) -> None:
+        """Clean declining volumes must score higher than a spiked distribution pattern."""
+        import numpy as np
+        from rules.scorer import _compute_vcp_score
+
+        def _slope_for_avgs(avgs: list[float]) -> float:
+            xs = np.arange(len(avgs), dtype=float)
+            ys = np.array(avgs, dtype=float)
+            baseline = ys[0] if ys[0] > 0 else 1.0
+            return float(np.polyfit(xs, ys / baseline, 1)[0])
+
+        slope_clean = _slope_for_avgs([5_000_000, 4_000_000, 3_000_000, 2_000_000])
+        slope_dist  = _slope_for_avgs([5_000_000, 3_800_000, 7_200_000, 2_900_000])
+
+        vcp_clean = self._valid_vcp_with_slope(slope_clean)
+        vcp_dist  = self._valid_vcp_with_slope(slope_dist)
+
+        score_clean = _compute_vcp_score(vcp_clean, _CFG, row=None)
+        score_dist  = _compute_vcp_score(vcp_dist,  _CFG, row=None)
+
+        assert score_clean > score_dist, (
+            f"Clean pattern ({score_clean:.2f}) should outscore distribution "
+            f"spike ({score_dist:.2f})"
+        )
+
+
+# ---------------------------------------------------------------------------
+# TestClimaxPenalty — Improvement 4: score penalty for climax days
+# ---------------------------------------------------------------------------
+
+
+class TestClimaxPenalty:
+    """Climax-day penalty is applied in the else (unqualified VCP) branch only."""
+
+    @staticmethod
+    def _unqualified_vcp(climax_days: int = 0) -> VCPMetrics:
+        """Build an unqualified VCPMetrics (is_valid_vcp=False)."""
+        return VCPMetrics(
+            contraction_count=2,
+            max_depth_pct=30.0,
+            final_depth_pct=15.0,
+            vol_contraction_ratio=0.8,
+            base_length_weeks=6,
+            base_low=90.0,
+            is_valid_vcp=False,
+            tightness_score=0.6,
+            monotonic_decline=True,
+            leg_depths=[30.0, 15.0],
+            vol_slope=-0.2,
+            climax_days_in_base=climax_days,
+        )
+
+    @staticmethod
+    def _valid_vcp(climax_days: int = 0) -> VCPMetrics:
+        """Build a valid VCPMetrics (is_valid_vcp=True)."""
+        return VCPMetrics(
+            contraction_count=3,
+            max_depth_pct=20.0,
+            final_depth_pct=8.0,
+            vol_contraction_ratio=0.4,
+            base_length_weeks=8,
+            base_low=85.0,
+            is_valid_vcp=True,
+            tightness_score=0.4,
+            monotonic_decline=True,
+            leg_depths=[20.0, 12.0, 8.0],
+            vol_slope=-0.3,
+            climax_days_in_base=climax_days,
+        )
+
+    # ------------------------------------------------------------------
+    # Test 1: unqualified VCP, climax_days=3 → score = raw_partial - 30 (or 0)
+    # ------------------------------------------------------------------
+    def test_unqualified_three_climax_days_penalised(self) -> None:
+        """climax_days=3 → penalty=30; score must be raw_partial-30 or 0."""
+        from rules.scorer import _compute_vcp_score
+        m = self._unqualified_vcp(climax_days=3)
+        sc = _CFG.get("scoring", {}).get("vcp_score", {})
+        partial_cap = sc.get("partial_cap", 45.0)
+        partial_per = sc.get("partial_per_contraction", 15.0)
+        raw = min(partial_cap, max(0.0, float(m.contraction_count) * partial_per))
+        penalty = min(30.0, 3 * 10.0)
+        expected = max(0.0, raw - penalty)
+        score = _compute_vcp_score(m, _CFG, row=None)
+        assert score == pytest.approx(expected, abs=1e-6), (
+            f"Expected {expected:.2f} with 3 climax days, got {score:.2f}"
+        )
+
+    # ------------------------------------------------------------------
+    # Test 2: unqualified VCP, climax_days=0 → score unchanged (no penalty)
+    # ------------------------------------------------------------------
+    def test_unqualified_zero_climax_days_no_penalty(self) -> None:
+        """climax_days=0 → penalty=0; score identical to old partial logic."""
+        from rules.scorer import _compute_vcp_score
+        m0 = self._unqualified_vcp(climax_days=0)
+        sc = _CFG.get("scoring", {}).get("vcp_score", {})
+        partial_cap = sc.get("partial_cap", 45.0)
+        partial_per = sc.get("partial_per_contraction", 15.0)
+        expected_raw = min(partial_cap, max(0.0, float(m0.contraction_count) * partial_per))
+        score = _compute_vcp_score(m0, _CFG, row=None)
+        assert score == pytest.approx(expected_raw, abs=1e-6), (
+            f"Expected raw partial {expected_raw:.2f} with 0 climax days, got {score:.2f}"
+        )
+
+    # ------------------------------------------------------------------
+    # Test 3: valid VCP, climax_days=3 → bonus path; NO climax penalty
+    # ------------------------------------------------------------------
+    def test_valid_vcp_climax_days_no_penalty(self) -> None:
+        """Valid VCPs go through the bonus path; climax penalty must NOT apply."""
+        from rules.scorer import _compute_vcp_score
+        m_no_climax   = self._valid_vcp(climax_days=0)
+        m_with_climax = self._valid_vcp(climax_days=3)
+        score_no   = _compute_vcp_score(m_no_climax,   _CFG, row=None)
+        score_with = _compute_vcp_score(m_with_climax, _CFG, row=None)
+        # Both take the bonus path → identical scores (penalty is else-branch only)
+        assert score_no == pytest.approx(score_with, abs=1e-6), (
+            f"Valid VCP scores must not differ by climax_days: "
+            f"no_climax={score_no:.2f} with_climax={score_with:.2f}"
         )

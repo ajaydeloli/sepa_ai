@@ -94,8 +94,8 @@ class TestHealthEndpoint:
         resp = app_client.get("/api/v1/health")
         assert resp.status_code == 200
         body = resp.json()
-        assert body["status"] == "ok"
-        assert body["version"] == "1.0.0"
+        assert body["data"]["status"] == "ok"
+        assert body["data"]["version"] == "1.0.0"
 
 
 # ---------------------------------------------------------------------------

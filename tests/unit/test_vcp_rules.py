@@ -41,6 +41,7 @@ def _make_metrics(**overrides) -> VCPMetrics:
         base_low=80.0,
         is_valid_vcp=True,
         tightness_score=5.0,
+        monotonic_decline=True,  # default: valid pattern has monotonic decline
     )
     defaults.update(overrides)
     return VCPMetrics(**defaults)
@@ -77,11 +78,11 @@ def test_qualify_vcp_too_few_contractions():
 # ---------------------------------------------------------------------------
 
 def test_qualify_vcp_depth_not_declining():
-    """final_depth_pct > max_depth_pct → declining_depth rule fails."""
-    # final_depth=25.0 > max_depth=20.0 means depth is INCREASING, not declining.
+    """monotonic_decline=False → declining_depth rule fails."""
     metrics = _make_metrics(
         max_depth_pct=20.0,
         final_depth_pct=25.0,
+        monotonic_decline=False,   # expansion present — Minervini rule violated
         is_valid_vcp=True,
     )
     qualified, details = qualify_vcp(metrics, _CFG)
@@ -119,3 +120,32 @@ def test_qualify_vcp_invalid_vcp_early_exit():
     assert all(v is False for v in details.values()), (
         f"Expected all detail flags False on early exit, got: {details}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Test 6 — Improvement 1: monotonic_decline drives declining_depth detail key
+# ---------------------------------------------------------------------------
+
+def test_qualify_vcp_monotonic_decline_false_rejects():
+    """monotonic_decline=False → qualified=False, details['declining_depth']=False."""
+    metrics = _make_metrics(
+        monotonic_decline=False,
+        # Keep is_valid_vcp=True so qualify_vcp evaluates individual rules
+        is_valid_vcp=True,
+    )
+    qualified, details = qualify_vcp(metrics, _CFG)
+
+    assert qualified is False
+    assert details["declining_depth"] is False
+
+
+def test_qualify_vcp_monotonic_decline_true_qualifies():
+    """monotonic_decline=True, all else valid → qualified=True, details['declining_depth']=True."""
+    metrics = _make_metrics(
+        monotonic_decline=True,
+        is_valid_vcp=True,
+    )
+    qualified, details = qualify_vcp(metrics, _CFG)
+
+    assert qualified is True
+    assert details["declining_depth"] is True

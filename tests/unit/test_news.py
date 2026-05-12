@@ -250,11 +250,11 @@ def test_compute_news_score_all_bullish():
 
 
 # ---------------------------------------------------------------------------
-# Test 8 — compute_news_score: empty list → 0.0
+# Test 8 — compute_news_score: empty list → None (no news data)
 # ---------------------------------------------------------------------------
 
 def test_compute_news_score_empty():
-    assert compute_news_score([]) == 0.0
+    assert compute_news_score([]) is None
 
 
 # ---------------------------------------------------------------------------

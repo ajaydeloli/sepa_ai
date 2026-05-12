@@ -178,7 +178,7 @@ class TestVcpApplyRulesBranches:
         assert _apply_vcp_rules(m, self._CFG) is False
 
     def test_vol_ratio_nan_when_first_avg_zero(self):
-        """_vol_ratio returns nan when first leg has zero average volume."""
+        """_vol_stats returns nan ratio when first leg has zero average volume."""
         from features.vcp import RuleBasedVCPDetector
 
         n = 40
@@ -193,8 +193,8 @@ class TestVcpApplyRulesBranches:
             {"start_idx": 0, "end_idx": 9,  "high_price": 101, "low_price": 99, "depth": 2},
             {"start_idx": 10, "end_idx": 19, "high_price": 100.5, "low_price": 99.5, "depth": 1},
         ]
-        result = RuleBasedVCPDetector._vol_ratio(df, legs)
-        assert math.isnan(result), f"Expected nan when first_avg=0, got {result}"
+        ratio, _slope = RuleBasedVCPDetector._vol_stats(df, legs)
+        assert math.isnan(ratio), f"Expected nan ratio when first_avg=0, got {ratio}"
 
     def test_compute_raises_configuration_error_for_unknown_detector(self):
         """get_detector raises ConfigurationError for unknown detector name."""
@@ -230,44 +230,66 @@ class TestVcpApplyRulesBranches:
 class TestScorerGaps:
     """Cover _compute_vcp_score vol_ratio branch and C-grade _determine_quality."""
 
+    _CFG = {
+        "scoring": {
+            "vcp_score": {
+                "valid_base": 60.0,
+                "ideal_contractions": 3,
+                "contraction_bonus_per_unit": 10.0,
+                "vol_bonus_strong": 20.0,
+                "vol_bonus_moderate": 10.0,
+                "vol_strong_threshold": 0.5,
+                "vol_moderate_threshold": 0.8,
+                "max_bonus": 40.0,
+                "partial_cap": 45.0,
+                "partial_per_contraction": 15.0,
+            },
+            "setup_quality_thresholds": {"a_plus": 85, "a": 70, "b": 55, "c": 40},
+            "setup_quality_conditions": {
+                "a_plus_min_conditions": 8,
+                "a_min_conditions": 8,
+                "b_min_conditions": 6,
+            },
+        }
+    }
+
     def test_compute_vcp_score_vol_ratio_between_05_and_08(self):
-        """When vol_contraction_ratio is in (0.5, 0.8), vol_bonus should be 10."""
+        """vol_slope = -0.30 → max vol_bonus; with 3 ideal contractions score is capped at 100."""
         from features.vcp import VCPMetrics
         from rules.scorer import _compute_vcp_score
 
         m = VCPMetrics(
             contraction_count=3, max_depth_pct=25.0, final_depth_pct=8.0,
-            vol_contraction_ratio=0.65,   # between 0.5 and 0.8 → vol_bonus=10
+            vol_contraction_ratio=0.65,
             base_length_weeks=8, base_low=100.0,
             is_valid_vcp=True, tightness_score=4.0,
+            vol_slope=-0.30,   # max vol_bonus=20; contraction_bonus=30 → total=50 → capped at 40
         )
-        score = _compute_vcp_score(m)
-
-        # base 60 + contraction_bonus=(3-0)*10=30 + vol_bonus=10 = 100, capped at 100
-        # BUT bonus = min(40, 30+10) = 40 → score = 60 + 40 = 100
-        # With 3 contractions: bonus = (3 - |3-3|) * 10 = 30; +vol_bonus=10 → 40 → score=100
+        score = _compute_vcp_score(m, self._CFG)
+        # bonus = min(40, 30+20) = 40 → score = 60 + 40 = 100
         assert score == 100.0, f"Expected 100.0, got {score}"
 
     def test_compute_vcp_score_vol_ratio_exactly_05_gets_bonus_20(self):
-        """vol_ratio < 0.5 → vol_bonus=20."""
+        """vol_slope = -0.30 → vol_bonus=20 with 2 contractions → score=100."""
         from features.vcp import VCPMetrics
         from rules.scorer import _compute_vcp_score
 
         m = VCPMetrics(
             contraction_count=2, max_depth_pct=20.0, final_depth_pct=8.0,
-            vol_contraction_ratio=0.3,    # < 0.5 → vol_bonus=20
+            vol_contraction_ratio=0.3,
             base_length_weeks=6, base_low=90.0,
             is_valid_vcp=True, tightness_score=3.0,
+            vol_slope=-0.30,   # vol_bonus=20; contraction_bonus=(3-1)*10=20 → total=40 → score=100
         )
-        score = _compute_vcp_score(m)
-        # contraction_bonus = (3 - |2-3|) * 10 = 20; vol_bonus=20 → bonus=min(40,40)=40
+        score = _compute_vcp_score(m, self._CFG)
+        # bonus = min(40, 20+20) = 40 → score = 60 + 40 = 100
         assert score == 100.0
 
     def test_determine_quality_c_grade(self):
         """score ≥ 40 with stage==2 but conditions_met < 6 → quality C."""
         from rules.scorer import _determine_quality
 
-        q = _determine_quality(score=45, stage=2, conditions_met=5, vcp_qualified=False)
+        q = _determine_quality(score=45, stage=2, conditions_met=5, vcp_qualified=False, config=self._CFG)
         assert q == "C", f"Expected 'C', got {q!r}"
 
     def test_determine_quality_fail_non_stage2(self):
@@ -275,14 +297,14 @@ class TestScorerGaps:
         from rules.scorer import _determine_quality
 
         for stage in (1, 3, 4):
-            q = _determine_quality(score=99, stage=stage, conditions_met=8, vcp_qualified=True)
+            q = _determine_quality(score=99, stage=stage, conditions_met=8, vcp_qualified=True, config=self._CFG)
             assert q == "FAIL", f"stage={stage}: expected FAIL, got {q!r}"
 
     def test_determine_quality_fail_score_below_40(self):
         """score < 40 with stage==2 → FAIL."""
         from rules.scorer import _determine_quality
 
-        q = _determine_quality(score=30, stage=2, conditions_met=8, vcp_qualified=True)
+        q = _determine_quality(score=30, stage=2, conditions_met=8, vcp_qualified=True, config=self._CFG)
         assert q == "FAIL"
 
 

@@ -75,7 +75,7 @@ def qualify_vcp(metrics: VCPMetrics, config: dict) -> tuple[bool, dict]:
     # ------------------------------------------------------------------
     r_count_min  = metrics.contraction_count >= min_contractions
     r_count_max  = metrics.contraction_count <= max_contractions
-    r_declining  = metrics.final_depth_pct < metrics.max_depth_pct
+    r_declining  = metrics.monotonic_decline
     r_vol        = (not require_vol) or (metrics.vol_contraction_ratio < 1.0)
     r_len_min    = metrics.base_length_weeks >= min_weeks
     r_len_max    = metrics.base_length_weeks <= max_weeks
