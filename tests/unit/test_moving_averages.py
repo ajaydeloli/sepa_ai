@@ -75,7 +75,7 @@ def _make_ohlcv(n: int = 250, trend: str = "flat") -> pd.DataFrame:
 
 def _default_config() -> dict:
     """Return a config dict with default stage parameters."""
-    return {"stage": {"ma200_slope_lookback": 20, "ma50_slope_lookback": 10}}
+    return {"trend_template": {"ma200_slope_lookback": 20, "ma50_slope_lookback": 10}}
 
 
 # ---------------------------------------------------------------------------

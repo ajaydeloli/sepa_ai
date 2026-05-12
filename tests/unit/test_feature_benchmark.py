@@ -68,7 +68,7 @@ def _make_config(tmp_path: Path) -> dict:
             "processed_dir": str(tmp_path / "processed"),
             "features_dir":  str(tmp_path / "features"),
         },
-        "stage": {
+        "trend_template": {
             "ma200_slope_lookback": 20,
             "ma50_slope_lookback": 10,
         },

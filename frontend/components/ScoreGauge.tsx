@@ -59,10 +59,6 @@ export function ScoreGauge({ score, quality, size = "md" }: Props) {
   const trackPath = arcPath(1,        cx, cy, r);
   const fillPath  = arcPath(fraction, cx, cy, r);
 
-  // Tick marks at 40 and 70 (zone boundaries)
-  const tickFractions = [0.4, 0.7];
-  const tickAngles = tickFractions.map((f) => Math.PI * (1 - f));
-
   return (
     <div className="flex flex-col items-center gap-1">
       <svg
@@ -84,18 +80,6 @@ export function ScoreGauge({ score, quality, size = "md" }: Props) {
             style={{ filter: `drop-shadow(0 0 6px ${fillColor}88)` }}
           />
         )}
-
-        {/* Zone ticks */}
-        {tickAngles.map((angle, i) => {
-          const inner = r - 11, outer = r - 1;
-          return (
-            <line key={i}
-              x1={cx + inner * Math.cos(angle)} y1={cy + inner * Math.sin(angle)}
-              x2={cx + outer * Math.cos(angle)} y2={cy + outer * Math.sin(angle)}
-              stroke="#334155" strokeWidth="2"
-            />
-          );
-        })}
 
         {/* Score number */}
         <text x={cx} y={cy - 10} textAnchor="middle" fontSize={fontSize} fontWeight="700"

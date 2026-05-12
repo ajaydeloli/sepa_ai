@@ -24,10 +24,6 @@ watchlist:
   min_score_alert: 55
   persist_path: "data/sepa_ai.db"
 
-stage:
-  ma200_slope_lookback: 20
-  ma50_slope_lookback: 10
-
 rs:
   # IBD-style multi-period weighted return (Minervini's preferred RS Rating source).
   # Formula: rs_raw = 0.4*(C/C_63) + 0.2*(C/C_126) + 0.2*(C/C_189) + 0.2*(C/C_252)
@@ -52,6 +48,7 @@ trend_template:
   pct_below_52w_high: 25.0
   min_rs_rating: 70
   ma200_slope_lookback: 20
+  ma50_slope_lookback: 10
 
 vcp:
   detector: "rule_based"
@@ -103,10 +100,7 @@ scoring:
     valid_base:               60.0   # floor score for a valid VCP
     ideal_contractions:       3      # contraction count that yields maximum bonus
     contraction_bonus_per_unit: 10.0 # points lost/gained per contraction away from ideal
-    vol_bonus_strong:         20.0   # bonus when vol_contraction_ratio < vol_strong_threshold
-    vol_bonus_moderate:       10.0   # bonus when ratio < vol_moderate_threshold
-    vol_strong_threshold:     0.5    # strong volume dry-up cutoff
-    vol_moderate_threshold:   0.8    # moderate volume dry-up cutoff
+    vol_bonus_strong:         20.0   # max bonus for steeply declining vol_slope (slope ≤ −0.30)
     max_bonus:                40.0   # cap on total bonus above valid_base
     partial_cap:              45.0   # max score for an unqualified VCP (must be < valid_base)
     partial_per_contraction:  15.0   # points per contraction for unqualified partial credit

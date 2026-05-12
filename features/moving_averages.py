@@ -51,8 +51,8 @@ def compute(df: pd.DataFrame, config: dict) -> pd.DataFrame:
     config:
         Screening configuration dict.  Relevant keys::
 
-            config["stage"]["ma200_slope_lookback"]  (default 20)
-            config["stage"]["ma50_slope_lookback"]   (default 10)
+            config["trend_template"]["ma200_slope_lookback"]  (default 20)
+            config["trend_template"]["ma50_slope_lookback"]   (default 10)
 
     Returns
     -------
@@ -75,11 +75,11 @@ def compute(df: pd.DataFrame, config: dict) -> pd.DataFrame:
             available=n_rows,
         )
 
-    stage_cfg: dict = config.get("stage", {})
-    ma200_lookback: int = stage_cfg.get(
+    trend_cfg: dict = config.get("trend_template", {})
+    ma200_lookback: int = trend_cfg.get(
         "ma200_slope_lookback", _DEFAULT_MA200_SLOPE_LOOKBACK
     )
-    ma50_lookback: int = stage_cfg.get(
+    ma50_lookback: int = trend_cfg.get(
         "ma50_slope_lookback", _DEFAULT_MA50_SLOPE_LOOKBACK
     )
 
