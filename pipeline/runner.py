@@ -474,14 +474,29 @@ def run_daily(ctx: RunContext) -> dict:
                 _fmap: dict[str, dict] = {}
                 for sym in _candidates:
                     try:
-                        _fmap[sym] = fetch_fundamentals(sym)
+                        _fmap[sym] = fetch_fundamentals(sym, config=config)
                     except Exception as _fe:
                         log.warning("Step 5b: fundamentals failed for %s: %s", sym, _fe)
+                # Also fetch for watchlist symbols forced through via force_symbols
+                # that are NOT in _candidates (i.e. they passed force_symbols but
+                # not the pre_filter).  Without this, their fundamental_details is
+                # stored as {} and Pydantic renders it as 7/7 FAIL in the UI even
+                # though the scorer correctly used the neutral 50.
+                _watchlist_extras = [s for s in watchlist_symbols if s not in _fmap]
+                for sym in _watchlist_extras:
+                    try:
+                        _fmap[sym] = fetch_fundamentals(sym, config=config)
+                    except Exception as _fe:
+                        log.warning("Step 5b: fundamentals failed for watchlist %s: %s", sym, _fe)
+                if _watchlist_extras:
+                    log.info(
+                        "Step 5b: fetched fundamentals for %d extra watchlist symbols",
+                        len(_watchlist_extras),
+                    )
                 fundamentals_map = _fmap
-                log.info("Step 5b: fetched fundamentals for %d candidates", len(_fmap))
+                log.info("Step 5b: fetched fundamentals for %d candidates total", len(_fmap))
             except Exception as _exc:
                 log.warning("Step 5b: fundamentals fetch skipped: %s", _exc)
-
         if config.get("news", {}).get("enabled", True):
             try:
                 from ingestion.news import (
@@ -676,7 +691,16 @@ def run_daily(ctx: RunContext) -> dict:
         # Step 11 — Filter alertable results via deduplication logic
         alertable: list = []
         try:
+            min_score_alert: int = int(
+                config.get("scoring", {}).get("min_score_alert", 0)
+            )
             for r in results:
+                if r.score < min_score_alert:
+                    log.debug(
+                        "Step 11: skipping %s — score %d below min_score_alert %d",
+                        r.symbol, r.score, min_score_alert,
+                    )
+                    continue
                 if should_alert(r, db, config):
                     alertable.append(r)
             log.info("Step 11: %d/%d results are alertable", len(alertable), len(results))

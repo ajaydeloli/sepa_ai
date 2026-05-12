@@ -233,6 +233,7 @@ def check_trend_template(row: pd.Series, config: dict) -> TrendTemplateResult:
         "rs_rating":          int(rs_rating) if rs_ok  else None,
         "pct_above_52w_low":  pct_above_52w_low,
         "pct_below_52w_high": pct_below_52w_high,
+        "min_rs_rating":     min_rs_rating,
     }
 
     log.debug(

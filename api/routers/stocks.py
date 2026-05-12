@@ -102,6 +102,18 @@ def _parse_row(row: dict[str, Any]) -> StockResultSchema:
     if isinstance(vcp_det, dict) and "qualified" not in vcp_det:
         raw["vcp_details"] = None
 
+    # fundamental_details: when fundamentals were never evaluated (symbol
+    # not in the pre-filter candidates during Step 5b), scorer.py stores {}
+    # (an empty dict).  Pydantic deserialises {} as FundamentalDetailsSchema()
+    # with every boolean field defaulting to False, making the Fundamentals
+    # card show "7/7 FAIL" even though the score used the neutral 50 —
+    # producing a visible mismatch with the Score Breakdown's 8/15.
+    # Null it out so the card shows "No fundamental data" instead, matching
+    # the same guard pattern used above for trend_template_details and vcp_details.
+    fund_det = raw.get("fundamental_details")
+    if isinstance(fund_det, dict) and "conditions_met" not in fund_det:
+        raw["fundamental_details"] = None
+
     # ── Fundamental score ──────────────────────────────────────────────
     # Extract the real 0–100 score from fundamental_details.score stored in
     # result_json.  When fundamentals were not evaluated the backend used a

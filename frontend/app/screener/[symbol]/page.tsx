@@ -83,7 +83,11 @@ function scoreBreakdown(s: StockResult): ScoreRow[] {
   const trendScore = Math.round((s.conditions_met / 8) * w.trend * 100);
   const rsScore    = Math.round((s.rs_rating / 100)    * w.rs_rating * 100);
   const cnt        = s.vcp_details?.contraction_count ?? 0;
-  const vcpRaw     = s.vcp_qualified ? 70 : Math.min(45, cnt * 15);
+  // vcpRaw is the estimated 0-100 raw component score before weighting.
+  // Qualified VCPs use 100 (full bar) — the actual backend score goes up to 100
+  // but we can't reconstruct it without score_components (proximity, vol_slope, etc.).
+  // Using 70 (old value) underestimated every qualified VCP by ~30 pts.
+  const vcpRaw     = s.vcp_qualified ? 100 : Math.min(45, cnt * 15);
   const vcpScore   = Math.round((vcpRaw / 100)         * w.vcp * 100);
   const volScore   = Math.round((s.breakout_triggered ? 100 : 50) * w.volume);
   const fundScore  = Math.round((s.fundamental_score / 100)       * w.fundamental * 100);
@@ -93,6 +97,10 @@ function scoreBreakdown(s: StockResult): ScoreRow[] {
         Math.round(((s.news_score + 100) / 2) * w.news)
       )
     : Math.round(w.news * 50);
+  // Legacy sector_bonus was a flat 0 or 5 pts added to the final score.
+  // Map it to a 0-100 raw score so the bar renders proportionally.
+  const sectorRaw   = (s.sector_bonus ?? 0) > 0 ? 100 : 0;
+  const sectorScore = Math.round(sectorRaw * (w.sector ?? 0));
 
   return [
     { label: "RS Rating",       value: rsScore,    max: Math.round(w.rs_rating   * 100), color: "bg-yellow-500" },
@@ -100,7 +108,7 @@ function scoreBreakdown(s: StockResult): ScoreRow[] {
     { label: "VCP Pattern",     value: vcpScore,    max: Math.round(w.vcp         * 100), color: "bg-purple-500" },
     { label: "Volume",          value: volScore,    max: Math.round(w.volume      * 100), color: "bg-green-500"  },
     { label: "Fundamentals",    value: fundScore,   max: Math.round(w.fundamental * 100), color: "bg-teal-500"   },
-    { label: "Sector Strength", value: 0,           max: Math.round((w.sector ?? 0) * 100), color: "bg-cyan-500" },
+    { label: "Sector Strength", value: sectorScore, max: Math.round((w.sector ?? 0) * 100), color: "bg-cyan-500" },
     { label: "News",            value: newsScore,   max: Math.round(w.news        * 100), color: "bg-orange-400" },
   ].filter((row) => row.max > 0);
 }

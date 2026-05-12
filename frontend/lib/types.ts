@@ -27,6 +27,10 @@ export interface TrendTemplate {
   condition_7: boolean;
   /** RS Rating >= threshold */
   condition_8: boolean;
+  /** Threshold from config for dynamic display */
+  pct_above_52w_low?: number;
+  pct_below_52w_high?: number;
+  min_rs_rating?: number;
 }
 
 export interface VCPDetails {
@@ -37,6 +41,9 @@ export interface VCPDetails {
   vol_contraction_ratio: number | null;
   base_length_weeks: number | null;
   tightness_score: number | null;
+  /** Days inside the base where volume exceeded the climax threshold (×50d avg).
+   *  Non-zero values apply a score penalty of up to −30 pts on unqualified VCPs. */
+  climax_days_in_base: number | null;
 }
 
 export interface FundamentalDetails {

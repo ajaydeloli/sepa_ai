@@ -70,6 +70,7 @@ vcp:
   climax_vol_threshold: 2.5        # multiplier above 50d avg volume = climax day
 
 fundamentals:
+  source: "screener"   # "screener" | "yfinance"
   enabled: true
   hard_gate: false
   cache_days: 7

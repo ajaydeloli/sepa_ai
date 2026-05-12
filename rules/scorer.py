@@ -61,10 +61,10 @@ _VCP_SCORE_DEFAULTS: dict = {
     "valid_base":               60.0,
     "ideal_contractions":       3,
     "contraction_bonus_per_unit": 10.0,
+    # vol_bonus_strong: max points awarded for a steeply declining vol_slope.
+    # The actual formula is continuous (see _compute_vcp_score docstring);
+    # there is no "moderate" tier or ratio threshold — those keys were removed.
     "vol_bonus_strong":         20.0,
-    "vol_bonus_moderate":       10.0,
-    "vol_strong_threshold":     0.5,
-    "vol_moderate_threshold":   0.8,
     "max_bonus":                40.0,
     "partial_cap":              45.0,
     "partial_per_contraction":  15.0,
@@ -146,8 +146,12 @@ def _compute_vcp_score(vcp_metrics: VCPMetrics, config: dict, row: pd.Series | N
     Qualified VCP:
       base (valid_base) + contraction quality bonus (0–max_bonus).
       Bonus = (ideal_contractions − |contractions − ideal|) × contraction_bonus_per_unit
-            + vol_bonus_strong   if vol_contraction_ratio < vol_strong_threshold
-            + vol_bonus_moderate if vol_contraction_ratio < vol_moderate_threshold
+            + vol_bonus     — continuous, derived from vol_slope:
+                                slope ≤ −0.30 → +vol_bonus_strong (max)
+                                slope = 0.0   → 0 pts
+                                slope > 0.0   → penalty, floored at −10 pts
+            + tightness_bonus — up to 15 pts when tightness_score < 0.75
+                                (scales linearly: 0.0 → 15 pts, 0.75 → 0 pts)
       Bonus is capped at max_bonus.
 
       When *row* is provided, the base_score is further scaled by a proximity
@@ -170,9 +174,6 @@ def _compute_vcp_score(vcp_metrics: VCPMetrics, config: dict, row: pd.Series | N
     ideal_contractions       = int(sc["ideal_contractions"])
     contraction_bonus_per_unit = float(sc["contraction_bonus_per_unit"])
     vol_bonus_strong         = float(sc["vol_bonus_strong"])
-    vol_bonus_moderate       = float(sc["vol_bonus_moderate"])
-    vol_strong_threshold     = float(sc["vol_strong_threshold"])
-    vol_moderate_threshold   = float(sc["vol_moderate_threshold"])
     max_bonus                = float(sc["max_bonus"])
     partial_cap              = float(sc["partial_cap"])
     partial_per_contraction  = float(sc["partial_per_contraction"])
@@ -515,6 +516,8 @@ def score_symbol(
     # BUG FIX: tt_result.details holds raw *numeric* values (close, sma_50…)
     # and must NOT be stored here — it caused all conditions to default False
     # when Pydantic validated against TrendTemplateSchema.
+    #
+    # Include threshold values from config so frontend can display dynamic labels.
     tt_details_dict: dict[str, Any] = {
         "passes":         tt_result.passes,
         "conditions_met": tt_result.conditions_met,
@@ -526,6 +529,10 @@ def score_symbol(
         "condition_6":    tt_result.condition_6,
         "condition_7":    tt_result.condition_7,
         "condition_8":    tt_result.condition_8,
+        # Threshold values for dynamic frontend display
+        "pct_above_52w_low":  tt_result.details.get("pct_above_52w_low"),
+        "pct_below_52w_high": tt_result.details.get("pct_below_52w_high"),
+        "min_rs_rating":     tt_result.details.get("min_rs_rating"),
     }
 
     # Build vcp_details as the VCPSchema-compatible metrics dict.

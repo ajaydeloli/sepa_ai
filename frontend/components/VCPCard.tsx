@@ -104,7 +104,41 @@ export default function VCPCard({ details }: Props) {
           <Row label="Final Depth"        value={fmt(details.final_depth_pct, "%")} />
           <Row label="Volume Contraction" value={fmt(details.vol_contraction_ratio, "×")} />
           <Row label="Base Length"        value={details.base_length_weeks != null ? `${details.base_length_weeks}w` : "—"} />
-          <Row label="Tightness Score"    value={fmt(details.tightness_score)} />
+          {/* Tightness — ATR₁₀/ATR₅₀ compression ratio; must be < 0.75 to qualify.
+               Colour: green < 0.50 (strong), amber 0.50–0.75 (acceptable), red ≥ 0.75 (fail). */}
+          <div className="flex justify-between items-center py-1.5 border-b border-slate-800 last:border-0">
+            <span className="text-xs text-slate-500">
+              Tightness
+              <span className="ml-1 text-[10px] text-slate-600 font-normal">ATR₁₀/ATR₅₀</span>
+            </span>
+            <span className="flex items-center gap-1.5 text-sm font-medium tabular-nums">
+              {details.tightness_score != null ? details.tightness_score.toFixed(2) : "—"}
+              {details.tightness_score != null && (
+                <span className={`text-[10px] px-1.5 py-0.5 rounded border font-normal leading-none ${
+                  details.tightness_score < 0.50
+                    ? "bg-green-600/20 text-green-400 border-green-600/30"
+                    : details.tightness_score < 0.75
+                    ? "bg-amber-600/20 text-amber-400 border-amber-600/30"
+                    : "bg-red-600/20 text-red-400 border-red-600/30"
+                }`}>
+                  {details.tightness_score < 0.50 ? "strong" : details.tightness_score < 0.75 ? "ok" : "fail"}
+                </span>
+              )}
+            </span>
+          </div>
+          {/* Climax days — shown with a penalty badge when non-zero so users can
+              see why an unqualified VCP lost up to −30 score points */}
+          <div className="flex justify-between items-center py-1.5 border-b border-slate-800 last:border-0">
+            <span className="text-xs text-slate-500">Climax Days in Base</span>
+            <span className="flex items-center gap-1.5 text-sm font-medium tabular-nums">
+              {details.climax_days_in_base ?? "—"}
+              {details.climax_days_in_base != null && details.climax_days_in_base > 0 && (
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-600/20 text-red-400 border border-red-600/30 font-normal leading-none">
+                  −{Math.min(30, details.climax_days_in_base * 10)}pts
+                </span>
+              )}
+            </span>
+          </div>
         </>
       ) : (
         <p className="text-slate-600 text-sm text-center py-8">No VCP data available.</p>

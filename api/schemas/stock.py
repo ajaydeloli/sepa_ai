@@ -49,6 +49,10 @@ class TrendTemplateSchema(BaseModel):
     condition_6: bool = False   # price >= N% above 52-week low
     condition_7: bool = False   # price within N% of 52-week high
     condition_8: bool = False   # RS Rating >= threshold
+    # Threshold values from config for dynamic frontend display
+    pct_above_52w_low: float | None = None
+    pct_below_52w_high: float | None = None
+    min_rs_rating: int | None = None
 
 
 class FundamentalDetailsSchema(BaseModel):
@@ -78,6 +82,9 @@ class VCPSchema(BaseModel):
     vol_contraction_ratio: float | None = None
     base_length_weeks: int | None = None
     tightness_score: float | None = None
+    # Days inside the base where volume exceeded the climax threshold (×50d avg).
+    # Non-zero values apply a score penalty of up to −30 pts on unqualified VCPs.
+    climax_days_in_base: int | None = None
 
 
 # ---------------------------------------------------------------------------

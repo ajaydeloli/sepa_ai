@@ -50,7 +50,10 @@ def qualify_vcp(metrics: VCPMetrics, config: dict) -> tuple[bool, dict]:
     require_vol: bool       = vcp_cfg.get("require_vol_contraction", True)
     min_weeks: int          = vcp_cfg.get("min_weeks", 3)
     max_weeks: int          = vcp_cfg.get("max_weeks", 52)
-    tightness_pct: float    = vcp_cfg.get("tightness_pct", 10.0)
+    # tightness_score is ATR₁₀/ATR₅₀ (a ratio, not a percentage).
+    # Default must match _apply_vcp_rules() in features/vcp.py (0.75).
+    # The old default of 10.0 made this check always pass for any real stock.
+    tightness_pct: float    = vcp_cfg.get("tightness_pct", 0.75)
     max_depth_pct_abs: float = vcp_cfg.get("max_depth_pct", 50.0)
 
     # ------------------------------------------------------------------

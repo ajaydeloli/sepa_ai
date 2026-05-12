@@ -56,7 +56,7 @@ class VCPMetrics:
     base_length_weeks: int          # total width of the base in calendar weeks
     base_low: float                 # lowest low in the entire base (stop-loss floor)
     is_valid_vcp: bool              # True when ALL qualification rules pass
-    tightness_score: float          # % range of the last 3 weeks (lower = tighter)
+    tightness_score: float          # ATR₁₀/ATR₅₀ compression ratio (< 0.75 to qualify; lower = tighter)
     monotonic_decline: bool = False # True when each leg depth < previous leg depth
     leg_depths: list = field(default_factory=list)  # ordered list of all leg depths
     vol_slope: float = float('nan')  # linear regression slope across all leg avg volumes
@@ -148,7 +148,7 @@ class RuleBasedVCPDetector(VCPDetector):
       6.  vol_contraction_ratio = avg volume of last leg / avg volume of first leg
       7.  base_length_weeks = (last pivot date - first pivot date).days // 7
       8.  base_low          = min(df["low"]) over the base date range
-      9.  tightness_score   = range of last 3 calendar weeks as % of min low
+      9.  tightness_score   = ATR₁₀ / ATR₅₀  (ATR compression ratio; NaN if < 50 bars)
       10. is_valid_vcp      = _apply_vcp_rules(metrics, config)
     """
 
@@ -445,7 +445,7 @@ def compute(df: pd.DataFrame, config: dict) -> pd.DataFrame:
     ``vcp_base_length_weeks`` total base width in calendar weeks
     ``vcp_base_low``          lowest low in the entire base
     ``vcp_valid``             True when all VCP qualification rules pass
-    ``vcp_tightness_score``   % range of the last 3 calendar weeks
+    ``vcp_tightness_score``   ATR₁₀/ATR₅₀ compression ratio (NaN if < 50 bars)
     ========================  =================================================
 
     On any detection failure the numeric columns are set to ``NaN`` and

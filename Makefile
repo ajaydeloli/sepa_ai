@@ -4,6 +4,12 @@ PYTHON := .venv/bin/python
 PIP    := .venv/bin/pip
 PYTEST := .venv/bin/pytest
 
+# Read dashboard port from config/settings.yaml; fall back to 8501 if the
+# key is absent or the venv is not yet set up (e.g. during 'make install').
+DASHBOARD_PORT := $(shell $(PYTHON) -c \
+  "import yaml; c=yaml.safe_load(open('config/settings.yaml')); print(c.get('dashboard',{}).get('port',8501))" \
+  2>/dev/null || echo 8501)
+
 help:
 	@echo "Minervini SEPA — available targets:"
 	@echo "  install       Create venv + install all dependencies"
@@ -73,10 +79,10 @@ api:
 	$(PYTHON) -m uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
 
 dashboard:
-	$(PYTHON) -m streamlit run dashboard/app.py --server.port 8501
+	$(PYTHON) -m streamlit run dashboard/app.py --server.port $(DASHBOARD_PORT)
 
 dashboard-dev:
-	$(PYTHON) -m streamlit run dashboard/app.py --server.port 8501 --server.address localhost
+	$(PYTHON) -m streamlit run dashboard/app.py --server.port $(DASHBOARD_PORT) --server.address localhost
 
 test-dashboard:
 	$(PYTEST) tests/unit/test_dashboard_components.py -v

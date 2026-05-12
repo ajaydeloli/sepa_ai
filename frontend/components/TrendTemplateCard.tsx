@@ -10,15 +10,33 @@ interface Props {
   passes: boolean;
 }
 
-const CONDITIONS: { key: keyof TrendTemplate; label: string; short: string }[] = [
-  { key: "condition_1", label: "Price above SMA150 & SMA200",  short: "P > MA150/200"  },
-  { key: "condition_2", label: "SMA150 above SMA200",           short: "MA150 > MA200"  },
-  { key: "condition_3", label: "SMA200 trending up (slope > 0)",short: "MA200 slope +"  },
-  { key: "condition_4", label: "SMA50 above SMA150 & SMA200",  short: "MA50 > MA150/200"},
-  { key: "condition_5", label: "Price above SMA50",             short: "P > MA50"       },
-  { key: "condition_6", label: "Price ≥ 30% above 52w low",    short: "30% off low"    },
-  { key: "condition_7", label: "Price within 25% of 52w high", short: "Near 52w high"  },
-  { key: "condition_8", label: "RS Rating ≥ threshold",         short: "RS Rating ✓"    },
+interface ConditionDef {
+  key: keyof TrendTemplate;
+  getLabel: (d: TrendTemplate | null) => string;
+  getShort: (d: TrendTemplate | null) => string;
+}
+
+const CONDITIONS: ConditionDef[] = [
+  { key: "condition_1", getLabel: () => "Price above SMA150 & SMA200",  getShort: () => "P > MA150/200"  },
+  { key: "condition_2", getLabel: () => "SMA150 above SMA200",         getShort: () => "MA150 > MA200"   },
+  { key: "condition_3", getLabel: () => "SMA200 trending up (slope > 0)",getShort: () => "MA200 slope +"   },
+  { key: "condition_4", getLabel: () => "SMA50 above SMA150 & SMA200",  getShort: () => "MA50 > MA150/200"},
+  { key: "condition_5", getLabel: () => "Price above SMA50",            getShort: () => "P > MA50"        },
+  {
+    key: "condition_6",
+    getLabel: (d) => `Price ≥ ${d?.pct_above_52w_low ?? 25}% above 52w low`,
+    getShort: (d) => `${d?.pct_above_52w_low ?? 25}% off low`
+  },
+  {
+    key: "condition_7",
+    getLabel: (d) => `Price within ${d?.pct_below_52w_high ?? 25}% of 52w high`,
+    getShort: (d) => `Near 52w high`
+  },
+  {
+    key: "condition_8",
+    getLabel: (d) => `RS Rating ≥ ${d?.min_rs_rating ?? 70}`,
+    getShort: (d) => `RS Rating ≥ ${d?.min_rs_rating ?? 70}`
+  },
 ];
 
 function ConditionCell({ index, label, short, met }: {
@@ -67,8 +85,8 @@ export default function TrendTemplateCard({ details, passes }: Props) {
             <ConditionCell
               key={c.key}
               index={i + 1}
-              label={c.label}
-              short={c.short}
+              label={c.getLabel(details)}
+              short={c.getShort(details)}
               met={details[c.key] as boolean}
             />
           ))}
