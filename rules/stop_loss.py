@@ -84,14 +84,18 @@ def compute_stop_loss(
     if vcp_base_low is not None and not math.isnan(vcp_base_low) and vcp_base_low > 0.0:
         stop_vcp  = vcp_base_low * (1.0 - stop_buffer_pct)
         risk_vcp  = _risk(stop_vcp)
-        if risk_vcp <= max_risk_pct:
+        # Guard: stop must be BELOW close (risk > 0) AND within the max-risk cap.
+        # If vcp_base_low > close (stock crashed below its old base), risk_vcp is
+        # negative — a negative risk passes "< max_risk_pct" but the stop would be
+        # ABOVE the current price, which is never a valid long-side stop.
+        if 0 < risk_vcp <= max_risk_pct:
             log.debug(
                 "compute_stop_loss: vcp_base_low method — stop=%.4f risk=%.2f%%",
                 stop_vcp, risk_vcp,
             )
             return stop_vcp, risk_vcp, "vcp_base_low"
         log.debug(
-            "compute_stop_loss: vcp_base_low risk=%.2f%% > max=%.1f%% — fallback to ATR",
+            "compute_stop_loss: vcp_base_low risk=%.2f%% invalid (must be 0–%.1f%%) — fallback to ATR",
             risk_vcp, max_risk_pct,
         )
 

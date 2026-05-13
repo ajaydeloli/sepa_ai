@@ -474,6 +474,10 @@ def score_symbol(
     # ------------------------------------------------------------------
     if stage_result.stage != 2:
         final_score_float = 0.0
+        # Zero out components so the Score Breakdown card shows all-zero
+        # for non-Stage-2 stocks instead of non-zero values that don't
+        # sum to the reported score of 0.
+        _score_components = {k: 0.0 for k in _score_components}
 
     final_score: int = int(final_score_float)
 

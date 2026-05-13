@@ -194,10 +194,11 @@ def run_screen(
 
     Steps
     -----
-    0. Build features_index (last-row summary for all symbols).
-    1. pre_filter() — eliminates ~70 % of the universe cheaply.
-    2. run_rs_rating_pass() — compute cross-symbol RS ratings.
-    3. write_rs_ratings_to_features() — persist ratings into feature Parquet files.
+    0. run_rs_rating_pass() — compute cross-symbol RS ratings FIRST (required
+       by build_features_index — rs_rating column is NaN after bootstrap).
+    1. write_rs_ratings_to_features() — persist ratings into feature Parquet files.
+    2. build_features_index() — last-row summary; rs_rating now present.
+    3. pre_filter() — eliminates ~70 % of the universe cheaply.
     4. compute_sector_ranks() — rank sectors by median RS.
     5. Parallel rule engine — one ProcessPoolExecutor worker per symbol.
     6. Sort by score DESC and return.
@@ -244,12 +245,30 @@ def run_screen(
     total = len(universe)
     log.info("run_screen: starting for %d symbols on %s", total, run_date)
 
-    # ── Step 0: Build features index ──────────────────────────────────────
-    log.info("run_screen: Step 0 — building features index")
+    # ── Step 0: RS rating pass (cross-symbol) — MUST run before features index ──
+    # IMPORTANT: rs_rating is intentionally left NaN by feature_store.bootstrap().
+    # It is only populated here.  build_features_index() requires the rs_rating
+    # column to be present in every feature Parquet file, so we compute and
+    # persist RS ratings FIRST — before building the index or running pre_filter.
+    # Running these steps in the wrong order causes every symbol to be skipped
+    # by build_features_index (missing column) → 0 symbols pass pre_filter →
+    # the rule engine processes nothing → all stocks show FAIL in the UI.
+    _rs_pool = rs_universe if rs_universe is not None else universe
+    log.info("run_screen: Step 0 — run_rs_rating_pass (pool=%d)", len(_rs_pool))
+    rs_ratings: dict[str, int] = run_rs_rating_pass(
+        _rs_pool, run_date, config, benchmark_df
+    )
+
+    # ── Step 1: Write RS ratings back to feature Parquet files ────────────
+    log.info("run_screen: Step 1 — write_rs_ratings_to_features")
+    write_rs_ratings_to_features(rs_ratings, config)
+
+    # ── Step 2: Build features index (rs_rating now present in all files) ─
+    log.info("run_screen: Step 2 — building features index")
     features_index = build_features_index(universe, config)
 
-    # ── Step 1: Pre-filter ────────────────────────────────────────────────
-    log.info("run_screen: Step 1 — pre_filter")
+    # ── Step 3: Pre-filter ────────────────────────────────────────────────
+    log.info("run_screen: Step 3 — pre_filter")
     passed_symbols: list[str] = pre_filter(features_index, config)
     n_passed = len(passed_symbols)
     log.info(
@@ -268,20 +287,6 @@ def run_screen(
             )
             passed_symbols = list(dict.fromkeys(passed_symbols + extras))
 
-    # ── Step 2: RS rating pass (cross-symbol) ─────────────────────────────
-    # IMPORTANT: RS must be ranked against the full Nifty 500 universe, NOT
-    # the (possibly scope-filtered) screener universe.  When rs_universe is
-    # provided (e.g. scope="watchlist"), use it; otherwise fall back to universe.
-    _rs_pool = rs_universe if rs_universe is not None else universe
-    log.info("run_screen: Step 2 — run_rs_rating_pass (pool=%d)", len(_rs_pool))
-    rs_ratings: dict[str, int] = run_rs_rating_pass(
-        _rs_pool, run_date, config, benchmark_df
-    )
-
-    # ── Step 3: Write RS ratings back to feature Parquet files ────────────
-    log.info("run_screen: Step 3 — write_rs_ratings_to_features")
-    write_rs_ratings_to_features(rs_ratings, config)
-
     # ── Step 4: Compute sector ranks ──────────────────────────────────────
     log.info("run_screen: Step 4 — compute_sector_ranks")
     sector_ranks: dict[str, int] = compute_sector_ranks(rs_ratings, symbol_info)
@@ -289,7 +294,7 @@ def run_screen(
     # ── Step 5: Parallel rule engine ──────────────────────────────────────
     log.info(
         "run_screen: Step 5 — rule engine for %d symbols (%d workers)",
-        n_passed, n_workers,
+        len(passed_symbols), n_workers,
     )
 
     # Serialise symbol_info as records so the worker can reconstruct the

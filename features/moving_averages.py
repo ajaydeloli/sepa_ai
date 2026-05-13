@@ -150,11 +150,17 @@ def _rolling_slope(series: pd.Series, window: int) -> pd.Series:
     pd.Series
         Same index as *series*; dtype float64.
     """
-    x = np.arange(window, dtype=float)
-
     def _slope(y: np.ndarray) -> float:
+        # Drop NaN values that can appear in windows covering the initial
+        # SMA warm-up period.  numpy.polyfit raises TypeError on empty or
+        # NaN-containing inputs (behaviour changed in numpy ≥1.24).
+        valid = ~np.isnan(y)
+        y_v = y[valid]
+        if len(y_v) < 2:
+            return float("nan")
+        x_v = np.arange(len(y_v), dtype=float)
         # polyfit returns [slope, intercept]; we only need the slope.
-        return float(np.polyfit(x, y, 1)[0])
+        return float(np.polyfit(x_v, y_v, 1)[0])
 
     return series.rolling(window=window, min_periods=window).apply(
         _slope, raw=True

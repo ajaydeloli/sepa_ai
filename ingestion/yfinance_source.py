@@ -154,13 +154,25 @@ class YFinanceSource(DataSource):
                 log.warning("fetch_universe_batch: no usable data for %s.", ticker)
             return result
 
-        # ── Multiple tickers: MultiIndex columns (field, ticker) ─────────
-        # yfinance returns columns like ("Close", "RELIANCE.NS"), ("Open", "TCS.NS")
+        # ── Multiple tickers: MultiIndex columns ─────────────────────────
+        # yfinance ≥1.0 returns (ticker, field) — tickers at level 0.
+        # Older versions returned (field, ticker) — tickers at level 1.
+        # Detect the correct level dynamically so the code is robust to
+        # version changes.
         if isinstance(raw.columns, pd.MultiIndex):
+            # Determine which level contains ticker names
+            _ticker_set = set(ns_tickers)
+            _ticker_level = 0  # default for yfinance ≥1.0
+            if not _ticker_set.intersection(raw.columns.get_level_values(0)):
+                # Tickers not at level 0 — try level 1 (old yfinance format)
+                _ticker_level = 1
+            log.debug(
+                "fetch_universe_batch: MultiIndex ticker level detected as %d", _ticker_level
+            )
             for ticker in ns_tickers:
                 try:
                     # Select all price/volume columns for this ticker
-                    ticker_df = raw.xs(ticker, axis=1, level=1)
+                    ticker_df = raw.xs(ticker, axis=1, level=_ticker_level)
                 except KeyError:
                     log.warning(
                         "fetch_universe_batch: no data in MultiIndex for %s.", ticker

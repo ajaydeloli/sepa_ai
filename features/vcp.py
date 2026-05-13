@@ -192,11 +192,14 @@ class RuleBasedVCPDetector(VCPDetector):
         monotonic_decline = all(depths[i] < depths[i-1] for i in range(1, len(depths)))
 
         vol_contraction_ratio, vol_slope = self._vol_stats(df, legs)
-        base_length_weeks     = self._base_weeks(df, swing_highs, swing_lows)
-        base_low              = self._base_low(df, swing_highs, swing_lows)
+        # Use leg-bounded indices for base measurements so that noise pivots
+        # filtered out by the ATR/duration guards cannot inflate the base.
+        base_start, base_end  = self._leg_index_range(legs)
+        base_length_weeks     = self._base_weeks(df, base_start, base_end)
+        base_low              = self._base_low(df, base_start, base_end)
         tightness_score       = self._tightness(df)
         climax_threshold = vcp_cfg.get('climax_vol_threshold', 2.5)
-        climax_days = self._climax_days(df, swing_highs, swing_lows, threshold=climax_threshold)
+        climax_days = self._climax_days(df, base_start, base_end, threshold=climax_threshold)
 
         metrics = VCPMetrics(
             contraction_count     = contraction_count,
@@ -239,32 +242,49 @@ class RuleBasedVCPDetector(VCPDetector):
         in price.  The defaults keep the filter off — fully backward-compatible.
         """
         legs: list[dict] = []
+        # Track which swing-low indices have already been claimed by a high so that
+        # each low can only anchor ONE leg.  This prevents two highs from sharing
+        # the same low when a noise micro-pullback is skipped via ATR filtering.
+        used_low_indices: set[int] = set()
+
         for sh_idx, sh_price in swing_highs:
-            # First swing low whose row index is strictly after this swing high
+            # Search for the earliest unclaimed swing low strictly after this high.
+            # When ATR filtering is active we skip (continue past) noise lows whose
+            # price displacement is too small — instead of aborting the whole search
+            # for this high (old `break`), we look for the next meaningful low.
             for sl_idx, sl_price in swing_lows:
-                if sl_idx > sh_idx:
-                    # ATR displacement guard — only when both parameters are active
-                    if atr_series is not None and min_atr_multiplier > 0.0:
-                        displacement = sh_price - sl_price
-                        atr_at_high = float(atr_series.iloc[sh_idx])
-                        if (
-                            not math.isnan(atr_at_high)
-                            and atr_at_high > 0
-                            and displacement < min_atr_multiplier * atr_at_high
-                        ):
-                            break  # discard — same as no matching low for this high
-                    depth = (sh_price - sl_price) / sh_price * 100.0
-                    legs.append(
-                        dict(
-                            start_idx     = sh_idx,
-                            end_idx       = sl_idx,
-                            high_price    = sh_price,
-                            low_price     = sl_price,
-                            depth         = depth,
-                            duration_days = sl_idx - sh_idx,
-                        )
+                if sl_idx <= sh_idx:
+                    continue  # low is before this high — keep scanning
+                if sl_idx in used_low_indices:
+                    continue  # low already claimed by a preceding high
+
+                # ATR displacement guard — only active when both parameters are set
+                if atr_series is not None and min_atr_multiplier > 0.0:
+                    displacement = sh_price - sl_price
+                    atr_at_high = float(atr_series.iloc[sh_idx])
+                    if (
+                        not math.isnan(atr_at_high)
+                        and atr_at_high > 0
+                        and displacement < min_atr_multiplier * atr_at_high
+                    ):
+                        # Noise micro-pullback: skip this low and try the next one.
+                        # (Previously `break` here made us abandon the entire high,
+                        # causing valid deeper lows to be missed entirely.)
+                        continue
+
+                depth = (sh_price - sl_price) / sh_price * 100.0
+                used_low_indices.add(sl_idx)
+                legs.append(
+                    dict(
+                        start_idx     = sh_idx,
+                        end_idx       = sl_idx,
+                        high_price    = sh_price,
+                        low_price     = sl_price,
+                        depth         = depth,
+                        duration_days = sl_idx - sh_idx,
                     )
-                    break
+                )
+                break  # found valid low for this high; advance to next high
         return legs
 
     @staticmethod
@@ -284,12 +304,17 @@ class RuleBasedVCPDetector(VCPDetector):
         if len(valid) < 2:
             ratio = leg_avgs[-1] / leg_avgs[0] if (len(leg_avgs) >= 2 and leg_avgs[0] > 0) else float('nan')
             return ratio, float('nan')
+        ratio = leg_avgs[-1] / leg_avgs[0] if leg_avgs[0] > 0 else float('nan')
+        # Require at least 3 data points for a meaningful regression line.
+        # With exactly 2 points polyfit produces a perfect-fit line (zero residual)
+        # where a single volume spike fully determines the slope — not robust.
+        if len(valid) < 3:
+            return ratio, float('nan')
         xs = np.array([i for i, _ in valid], dtype=float)
         ys = np.array([v for _, v in valid], dtype=float)
         baseline = ys[0] if ys[0] > 0 else 1.0
         ys_norm = ys / baseline
         slope = float(np.polyfit(xs, ys_norm, 1)[0])
-        ratio = leg_avgs[-1] / leg_avgs[0] if leg_avgs[0] > 0 else float('nan')
         return ratio, slope
 
     @staticmethod
@@ -297,22 +322,46 @@ class RuleBasedVCPDetector(VCPDetector):
         swing_highs: list[tuple[int, float]],
         swing_lows:  list[tuple[int, float]],
     ) -> tuple[int, int]:
-        """Return (first_pivot_row_idx, last_pivot_row_idx)."""
+        """Return (first_pivot_row_idx, last_pivot_row_idx).
+
+        .. deprecated::
+            Prefer :meth:`_leg_index_range` which uses only the pivots that
+            are part of validated contraction legs and avoids base inflation
+            from noise pivots that were filtered out.
+        """
         all_idx = [i for i, _ in swing_highs] + [i for i, _ in swing_lows]
+        if not all_idx:
+            raise ValueError("_all_pivot_indices called with empty pivot lists")
         return min(all_idx), max(all_idx)
+
+    @staticmethod
+    def _leg_index_range(legs: list[dict]) -> tuple[int, int]:
+        """Return (first_idx, last_idx) bounded strictly to validated leg pivots.
+
+        Using leg pivots (not the full pivot list from find_all_pivots) prevents
+        noise pivots that were ATR-filtered or duration-filtered from inflating
+        the base length, distorting base_low, and injecting false climax days.
+        """
+        if not legs:
+            raise ValueError("_leg_index_range called with no legs")
+        return legs[0]["start_idx"], legs[-1]["end_idx"]
 
     @staticmethod
     def _climax_days(
         df: pd.DataFrame,
-        swing_highs: list[tuple[int, float]],
-        swing_lows: list[tuple[int, float]],
+        first_idx: int,
+        last_idx: int,
         threshold: float = 2.5,
     ) -> int:
         """Count days inside the base where volume > threshold × 50d average.
 
-        Returns 0 when insufficient data. Uses _all_pivot_indices() for the base range.
+        Parameters
+        ----------
+        first_idx / last_idx:
+            Row indices bounding the base (from :meth:`_leg_index_range`).
+
+        Returns 0 when insufficient data.
         """
-        first_idx, last_idx = RuleBasedVCPDetector._all_pivot_indices(swing_highs, swing_lows)
         base_df = df.iloc[first_idx: last_idx + 1]
         if len(base_df) < 10:
             return 0
@@ -333,10 +382,9 @@ class RuleBasedVCPDetector(VCPDetector):
     @staticmethod
     def _base_weeks(
         df: pd.DataFrame,
-        swing_highs: list[tuple[int, float]],
-        swing_lows:  list[tuple[int, float]],
+        first_idx: int,
+        last_idx: int,
     ) -> int:
-        first_idx, last_idx = RuleBasedVCPDetector._all_pivot_indices(swing_highs, swing_lows)
         first_date = df.index[first_idx]
         last_date  = df.index[last_idx]
         return int((last_date - first_date).days // 7)
@@ -344,15 +392,19 @@ class RuleBasedVCPDetector(VCPDetector):
     @staticmethod
     def _base_low(
         df: pd.DataFrame,
-        swing_highs: list[tuple[int, float]],
-        swing_lows:  list[tuple[int, float]],
+        first_idx: int,
+        last_idx: int,
     ) -> float:
-        first_idx, last_idx = RuleBasedVCPDetector._all_pivot_indices(swing_highs, swing_lows)
         return float(df["low"].iloc[first_idx: last_idx + 1].min())
 
     @staticmethod
     def _tightness(df: pd.DataFrame) -> float:
-        """ATR compression ratio: ATR_10 / ATR_50.
+        """Volatility compression ratio: avg_TR_10 / avg_TR_50.
+
+        Uses a *simple moving average* of True Range (not Wilder's smoothed ATR).
+        The ratio is dimensionally consistent — units cancel — so the simpler
+        formula is equivalent for measuring relative compression.
+
         < 0.5 = strong compression. < 0.75 = acceptable. >= 1.0 = no compression.
         Returns float('nan') if insufficient data (< 50 bars).
         """
@@ -365,7 +417,7 @@ class RuleBasedVCPDetector(VCPDetector):
         ], axis=1).max(axis=1)
         atr_10 = float(tr.iloc[-10:].mean())
         atr_50 = float(tr.iloc[-50:].mean())
-        if atr_50 <= 0.0 or math.isnan(atr_50):
+        if atr_50 <= 0.0 or math.isnan(atr_50) or math.isnan(atr_10):
             return float('nan')
         return atr_10 / atr_50
 
